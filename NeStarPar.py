@@ -63,14 +63,7 @@ class StarPar(object):
 		self.min_m = min(modtab['[Fe/H]in'])
 
 		self.ss = {}
-		print 'Doing KD-Tree...'
-		# self.ran_a = (self.max_a-self.min_a)/10.0
-		# self.ran_e = (self.max_e-self.min_e)/100.0
-		# self.ran_m = (self.max_m-self.min_m)*1.0
-
-		# self.age_n = (modtab['log_age']-self.min_a)/self.ran_a
-		# self.eep_n = (modtab['EEP']-self.min_e)/self.ran_e
-		# self.FeH_n = (modtab['[Fe/H]in']-self.min_m)/self.ran_m
+		print 'Growing the KD-Tree...'
 		self.age_n = modtab['log_age']*(1.0/0.05) 
 		self.eep_n = modtab['EEP']*(1.0/1.0) 
 		self.FeH_n = modtab['[Fe/H]in']*(1.0/0.25) 
@@ -80,7 +73,6 @@ class StarPar(object):
 
 		self.dist = np.sqrt( (2.0**2.0) + (2.0**2.0) + (2.0**2.0) )
 
-		# self.dist = np.sqrt( (0.5/self.ran_m)**2.0 + (0.1/self.ran_a)**2.0 + (1.0/self.ran_e)**2.0)
 
 	def __call__(self, bfpar,epar,priordict=None,outname='TEST.dat',sampler='emcee',p0mean=None,p0std=None,nwalkers=100,nthreads=0,nburnsteps=0,nsteps=100):
 		# write input into self
@@ -102,11 +94,27 @@ class StarPar(object):
 
 		# see if photometry is being fit
 		self.fitphotbool = False
-		for kk in bfpar.keys():
+		for kk in self.bfpar.keys():
 			if kk in self.modphotbands:
 				self.fitphotbool = True
-				self.ndim = 5
+				self.ndim = 5					
 				break
+
+		# see if distance is being fit, only set if photometry is given
+		if self.fitphotbool:
+			self.fitdistorpara = False
+			for kk in self.bfpar.keys():
+				if kk in ['Distance','distance','dist','Dist']:
+					self.fitdistorpara = 'Dist'
+					self.DM = self.DM_distance
+					break
+				elif kk in ['Parallax','parallax','par','Par']:
+					self.fitdistorpara = 'Para'
+					self.DM = self.DM_parallax
+					break
+				else:
+					pass
+
 
 		# start timer
 		startbin = datetime.now()
@@ -252,11 +260,11 @@ class StarPar(object):
 
 	def nestle_callback(self,iterinfo):
 		# print iteration number and evidence at specific iterations
-		# if iterinfo['it'] % 100 == 0:
-		if iterinfo['logz'] < -10E+6:
-			print 'Iter: {0} < -10M'.format(iterinfo['it'])
-		else:
-			print 'Iter: {0} = {1}'.format(iterinfo['it'],iterinfo['logz'])
+		if iterinfo['it'] % 100 == 0:
+			if iterinfo['logz'] < -10E+6:
+				print 'Iter: {0} < -10M'.format(iterinfo['it'])
+			else:
+				print 'Iter: {0} = {1}'.format(iterinfo['it'],iterinfo['logz'])
 
 
 	def prior_trans(self,par):
@@ -301,9 +309,9 @@ class StarPar(object):
 		try:
 			if self.fitphotbool:
 				age,eep,feh,dist,A_v = par
-				if dist <= 0:
-					return 'ValueError'
 				if A_v < 0:
+					return 'ValueError'
+				if dist <= 0:
 					return 'ValueError'
 			else:
 				age,eep,feh = par
@@ -311,7 +319,7 @@ class StarPar(object):
 			age,eep,feh = par
 
 		# change age to log(age)
-		if age >= 0:
+		if age > 0:
 			lage = np.log10(age*10.0**9.0)
 		else:
 			# print 'age < 0'
@@ -338,8 +346,9 @@ class StarPar(object):
 
 		try:
 			if self.fitphotbool:
-				datadict['Dist'] = dist
 				datadict['A_v'] = A_v
+			if self.fitdistorpara in ["Dist","Para"]:
+				datadict['Dist'] = dist
 		except:
 			pass
 
@@ -357,31 +366,6 @@ class StarPar(object):
 			if len(np.unique(modtab_i[testkk])) < 2:
 				return 'ValueError'
 
-		# distscale = 1.0
-		# while True:
-		# 	goodset = True
-		# 	ind = self.tree.query_ball_point([new_a,new_e,new_m],self.dist*distscale)
-		# 	modtab_i = self.modtab[ind]
-		# 	# check to see if new model work, at least two point in each dimension
-		# 	for par in ['EEP','log_age','[Fe/H]in']:
-		# 		if len(np.unique(modtab_i[par])) < 2:
-		# 			# print len(np.unique(modtab_i[par])),eep,lage,feh
-		# 			goodset = False
-		# 		else:
-		# 			pass
-		# 	if goodset == True:
-		# 		break
-		# 	else:
-		# 		distscale = distscale*1.05
-
-		# ind = self.tree.query_ball_point([new_a,new_e,new_m],self.dist)
-		# modtab_i = self.modtab[ind]
-		# for par in ['EEP','log_age','[Fe/H]in']:
-		# 	if len(np.unique(modtab_i[par])) < 2:
-		# 		print 'Not enough points', par, np.unique(modtab_i[par])
-		# 		return 'ValueError'
-
-
 		values = np.stack([modtab_i[par] for par in self.parnames],axis=1)
 		dataint = LinearNDInterpolator(
 				(modtab_i['log_age'],modtab_i['EEP'],modtab_i['[Fe/H]in']),
@@ -389,19 +373,7 @@ class StarPar(object):
 				fill_value=np.nan_to_num(-np.inf),
 				rescale=False
 				)(lage,eep,feh)
-				
-		# try:
-		# 	with warnings.catch_warnings():
-		# 		warnings.simplefilter("ignore")			
-		# 		dataint = LinearNDInterpolator(
-		# 				(modtab_i['EEP'],modtab_i['log_age'],modtab_i['[Fe/H]in']),
-		# 				values,
-		# 				fill_value=np.nan_to_num(-np.inf),
-		# 				rescale=True
-		# 				)(eep,lage,feh)
-		# except:
-		# 	return 'ValueError'
-			
+							
 		for ii,par in enumerate(self.parnames):
 			if dataint[ii] != np.nan_to_num(-np.inf):
 				datadict[par] = dataint[ii]
@@ -426,9 +398,13 @@ class StarPar(object):
 		return -0.5 * chisq
 
 
-	def DM(self,parallax):
+	def DM_parallax(self,parallax):
 		#parallax in mas
 		return 5.0*np.log10(1.0/(parallax/1000.0))-5.0
+
+	def DM_distance(self,distance):
+		#distance in parsecs
+		return 5.0*np.log10(distance)-5.0
 
 	def red(self,Teff=None,band='V',A_v=0.0):
 		# Right now don't do anything with Teff, eventually have it correctly calculate Av/E(B-V), 
@@ -495,13 +471,19 @@ if __name__ == '__main__':
 	bfpar['Teff'] = 5810.0
 	bfpar['log(g)'] = 4.307
 	bfpar['[Fe/H]'] = 0.22
-	# bfpar['parallax'] = 747.23
+	bfpar['parallax'] = 747.23
+	bfpar['V'] = -0.01
+	bfpar['B'] = 0.70
+	bfpar['U'] = 0.94
 
 	epar = {}
 	epar['Teff'] = 50.0
 	epar['log(g)'] = 0.005
 	epar['[Fe/H]'] = 0.05
-	# epar['parallax'] = 1.17
+	epar['parallax'] = 1.17
+	epar['V'] = 0.01
+	epar['B'] = 0.01
+	epar['U'] = 0.01
 
 	# define any priors with dictionary
 	priordict = {}
