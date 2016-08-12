@@ -23,7 +23,7 @@ class StarPar(object):
 		if model == 'MIST':
 			# read in MIST models
 			modtab_i = Table(np.array(h5py.File('/Users/pcargile/Astro/SteEvoMod/MIST_full.h5','r')['data']))
-			
+
 			# parse MIST models to only include up to end of helium burning (TACHeB), only to ages < 16 Gyr, and 
 			# stellar masses < 100 Msol
 			modtab = modtab_i[(modtab_i['EEP'] <= 707) & (modtab_i['log_age'] <= np.log10(18.0*10.0**9.0)) & (modtab_i['initial_mass'] < 100.0)]
@@ -73,10 +73,10 @@ class StarPar(object):
 		self.age_scale = 0.05
 		self.eep_scale = 1.0
 		self.feh_scale = 0.25
-		self.age_n = modtab['log_age']*(1.0/0.05) 
-		self.eep_n = modtab['EEP']*(1.0/1.0) 
-		self.FeH_n = modtab['[Fe/H]in']*(1.0/0.25) 
-		self.pts_n = zip(self.age_n,self.eep_n,self.FeH_n)
+		self.age_n = modtab['log_age']*(1.0/self.age_scale) 
+		self.eep_n = modtab['EEP']*(1.0/self.eep_scale) 
+		self.feh_n = modtab['[Fe/H]in']*(1.0/self.feh_scale) 
+		self.pts_n = zip(self.age_n,self.eep_n,self.feh_n)
 
 		self.tree = cKDTree(self.pts_n)
 
