@@ -22,60 +22,72 @@ class StarPar(object):
 
 		if model == 'MIST':
 			# read in MIST models
-			modtab_i = Table(np.array(h5py.File('/Users/pcargile/Astro/SteEvoMod/MIST_full.h5','r')['data']))
+			EAF_i = Table(np.array(h5py.File('/Users/Phill/Astro/MIST/MIST_full.h5','r')['EAF']))
+			BSP_i = Table(np.array(h5py.File('/Users/Phill/Astro/MIST/MIST_full.h5','r')['BSP']))
+			PHOT_i = Table(np.array(h5py.File('/Users/Phill/Astro/MIST/MIST_full.h5','r')['PHOT']))
+			ALLSP_i = Table(np.array(h5py.File('/Users/Phill/Astro/MIST/MIST_full.h5','r')['All_SP']))
 
 			# parse MIST models to only include up to end of helium burning (TACHeB), only to ages < 16 Gyr, and 
-			# stellar masses < 100 Msol
-			modtab = modtab_i[(modtab_i['EEP'] <= 707) & (modtab_i['log_age'] <= np.log10(18.0*10.0**9.0)) & (modtab_i['initial_mass'] < 100.0)]
+			# stellar masses < 50 Msol (EEP < 707)
+			cond = (EAF_i['EEP'] <= 605) & (EAF_i['log_age'] <= np.log10(18.0*10.0**9.0)) & (BSP_i['star_mass'] < 50.0)
+			self.EAF = EAF_i[cond]
+			self.BSP = BSP_i[cond]
+			self.PHOT = PHOT_i[cond]
+			self.ALLSP = ALLSP_i[cond]
+			Xsurf = self.ALLSP['surface_h1'].copy()
+			del(self.ALLSP)
 
-			self.modphotbands = (['U','B','V','R','I','J','H','Ks','Kp','K_D51','SDSS_u','SDSS_g','SDSS_r','SDSS_i','SDSS_z',
-				'CFHT_u','CFHT_g','CFHT_r','CFHT_i_new','CFHT_i_old','CFHT_z','W1','W2','W3','W4'])
+
+			# define the available photometric filters
+			self.modphotbands = self.PHOT.keys()
 
 			# rename stuff for clarity
-			modtab['log_L'].name = 'log(L)'
-			modtab['log_Teff'].name = 'log(Teff)'
-			modtab['initial_mass'].name = 'Mass'
-			modtab['initial_[Fe/H]'].name = '[Fe/H]in'
-			modtab['log_g'].name = 'log(g)'
+			self.EAF['initial_[Fe/H]'].name = '[Fe/H]in'
+			self.BSP['log_L'].name = 'log(L)'
+			self.BSP['log_Teff'].name = 'log(Teff)'
+			self.BSP['log_R'].name = 'log(R)'
+			self.BSP['star_mass'].name = 'Mass'
+			self.BSP['log_g'].name = 'log(g)'
+			self.BSP['log_surf_z'].name = 'log(Z_surf)'
 
-			modtab['Teff'] = 10.0**(modtab['log(Teff)'])
+			self.BSP['Z_surf'] = 10.0**(self.BSP['log(Z_surf)'])
+			self.BSP['Teff'] = 10.0**(self.BSP['log(Teff)'])
+			self.BSP['Rad'] = 10.0**(self.BSP['log(R)'])
 
-			Ysurf = 0.249 + ((0.2703-0.249)/0.0142)*modtab['Z_surf'] # from Asplund et al. 2009
-			Xsurf = 1 - Ysurf - modtab['Z_surf']
-			modtab['[Fe/H]'] = np.log10((modtab['Z_surf']/Xsurf)) - np.log10(0.0199)
+			# Ysurf = 0.249 + ((0.2703-0.249)/0.0142)*self.BSP['Z_surf'] # from Asplund et al. 2009
+			# Xsurf = 1 - Ysurf - self.BSP['Z_surf']
+			self.BSP['[Fe/H]'] = np.log10(self.BSP['Z_surf']/Xsurf) - np.log10(0.0199)
 
 		else:
 			print 'ONLY WORKS ON MIST'
 			exit()
 
-		modtab['Rad'] = 10.0**((modtab['log(L)'] - 4.0*(modtab['log(Teff)']-np.log10(5770.0)))/2.0)
-		self.modtab = modtab
-
 		# create parnames
-		self.parnames = modtab.keys()
-		# remove interpolated parameters
-		self.parnames.remove('EEP')
-		self.parnames.remove('log_age')
-		self.parnames.remove('[Fe/H]in')
+		self.parnames = self.BSP.keys()+self.PHOT.keys()
+
+		# create a stacked values array
+		self.valuestack = np.stack(
+			[self.BSP[par] for par in self.BSP.keys()]+[self.PHOT[par] for par in self.PHOT.keys()]
+			,axis=1)
+
+		# init the reddening class
+		RR = Redden()
+		self.red = RR.red
 
 		# define age/mass bounds for use later as uninformative priors
-		self.max_e = max(modtab['EEP'])
-		self.min_e = min(modtab['EEP'])
-
-		self.max_a = max(modtab['log_age'])
-		self.min_a = min(modtab['log_age'])
-
-		self.max_m = max(modtab['[Fe/H]in'])
-		self.min_m = min(modtab['[Fe/H]in'])
+		self.minmax = {}
+		self.minmax['EEP'] = [self.EAF['EEP'].min(),self.EAF['EEP'].max()]
+		self.minmax['AGE'] = [self.EAF['log_age'].min(),self.EAF['log_age'].max()]
+		self.minmax['FEH'] = [self.EAF['[Fe/H]in'].min(),self.EAF['[Fe/H]in'].max()]
 
 		self.ss = {}
 		print 'Growing the KD-Tree...'
 		self.age_scale = 0.05
 		self.eep_scale = 1.0
 		self.feh_scale = 0.25
-		self.age_n = modtab['log_age']*(1.0/self.age_scale) 
-		self.eep_n = modtab['EEP']*(1.0/self.eep_scale) 
-		self.feh_n = modtab['[Fe/H]in']*(1.0/self.feh_scale) 
+		self.age_n = self.EAF['log_age']*(1.0/self.age_scale) 
+		self.eep_n = self.EAF['EEP']*(1.0/self.eep_scale) 
+		self.feh_n = self.EAF['[Fe/H]in']*(1.0/self.feh_scale) 
 		self.pts_n = zip(self.age_n,self.eep_n,self.feh_n)
 
 		self.tree = cKDTree(self.pts_n)
@@ -103,6 +115,7 @@ class StarPar(object):
 
 		# see if photometry is being fit
 		self.fitphotbool = False
+		self.fitdistorpara = False
 		for kk in self.bfpar.keys():
 			if kk in self.modphotbands:
 				self.fitphotbool = True
@@ -111,7 +124,6 @@ class StarPar(object):
 
 		# see if distance is being fit, only set if photometry is given
 		if self.fitphotbool:
-			self.fitdistorpara = False
 			for kk in self.bfpar.keys():
 				if kk in ['Distance','distance','dist','Dist']:
 					self.fitdistorpara = "Dist"
@@ -136,6 +148,8 @@ class StarPar(object):
 			self.run_emcee()
 		elif sampler == 'nestle':
 			return self.run_nestle()
+		elif sampler == 'initalize':
+			return None
 		else:
 			print 'DID NOT UNDERSTAND WHICH SAMPLER TO USE!'
 			return None
@@ -273,7 +287,7 @@ class StarPar(object):
 
 	def nestle_callback(self,iterinfo):
 		# print iteration number and evidence at specific iterations
-		if iterinfo['it'] % 1000 == 0:
+		if iterinfo['it'] % 500 == 0:
 			if iterinfo['logz'] < -10E+6:
 				print 'Iter: {0} < -10M'.format(iterinfo['it'])
 			else:
@@ -281,17 +295,17 @@ class StarPar(object):
 
 
 	def prior_trans(self,par):
-		eepran = (self.max_e-self.min_e)*0.999
-		ageran = (self.max_a-self.min_a)*0.999
-		fehran = (self.max_m-self.min_m)*0.999
+		eepran = (self.minmax['EEP'][1]-self.minmax['EEP'][0])#*0.95
+		ageran = (self.minmax['AGE'][1]-self.minmax['AGE'][0])#*0.95 
+		fehran = (self.minmax['FEH'][1]-self.minmax['FEH'][0])#*0.95 
 		if self.fitphotbool:
 			age,eep,feh,dist,A_v = par
 			distran = 10000.0
 			Avran = 5.0
 			return np.array([
-				ageran*age+self.min_a,
-				eepran*eep+self.min_e,
-				fehran*feh+self.min_m,
+				ageran*age+self.minmax['AGE'][0],
+				eepran*eep+self.minmax['EEP'][0],
+				fehran*feh+self.minmax['FEH'][0],
 				distran*dist,
 				Avran*A_v
 				])
@@ -299,9 +313,9 @@ class StarPar(object):
 		else:
 			age,eep,feh = par
 			return np.array([
-				ageran*age+self.min_a,
-				eepran*eep+self.min_e,
-				fehran*feh+self.min_m
+				ageran*age+self.minmax['AGE'][0],
+				eepran*eep+self.minmax['EEP'][0],
+				fehran*feh+self.minmax['FEH'][0],
 				])
 
 
@@ -311,7 +325,7 @@ class StarPar(object):
 		moddict = self.modcall(par)
 		if moddict == "ValueError":
 			return np.nan_to_num(-np.inf)
-		lnlike = self.loglhood(moddict)      
+		lnlike = self.loglhood(moddict)
 		return lnlike
 
 
@@ -339,12 +353,12 @@ class StarPar(object):
 			return 'ValueError'
 
 		# make sure parameters are within the grid, no extrapolations
-		if ((eep > self.max_e) or 
-			(eep < self.min_e) or 
-			(lage > self.max_a)  or 
-			(lage < self.min_a) or 
-			(feh > self.max_m) or
-			(feh < self.min_m)
+		if ((eep > self.minmax['EEP'][1]) or 
+			(eep < self.minmax['EEP'][0]) or 
+			(lage > self.minmax['AGE'][1])  or 
+			(lage < self.minmax['AGE'][0]) or 
+			(feh > self.minmax['FEH'][1]) or
+			(feh < self.minmax['FEH'][0])
 			):
 			# print 'HIT MODEL BOUNDS'
 			return 'ValueError'
@@ -364,37 +378,36 @@ class StarPar(object):
 				datadict['Dist'] = dist
 			if self.fitdistorpara == "Para":
 				datadict['Para'] = dist
-
 		except:
 			pass
 
 		# sample KD-Tree and build interpolator
-		new_a = lage*(1.0/0.05) 
-		new_e = eep*(1.0/1.0) 
-		new_m = feh*(1.0/0.25) 
+		new_a = lage*(1.0/self.age_scale) 
+		new_e = eep*(1.0/self.eep_scale) 
+		new_m = feh*(1.0/self.feh_scale) 
 
 		# run tree query, check to make sure you get enough points in each dimension
 		ind = self.tree.query_ball_point([new_a,new_e,new_m],self.dist,p=5)
-		modtab_i = self.modtab[ind]
+		EAF_i = self.EAF[ind]
+		valuestack_i = self.valuestack[ind]
 
 		# check each dimension to make sure it has at least two values to interpolate over
 		for testkk in ['log_age','EEP','[Fe/H]in']:
-			if len(np.unique(modtab_i[testkk])) < 2:
+			if len(np.unique(EAF_i[testkk])) < 2:
 				return 'ValueError'
 
 		# check to make sure iteration lage,eep,feh is within grid
-		if (lage < min(modtab_i['log_age'])) or (lage > max(modtab_i['log_age'])):
+		if (lage < min(EAF_i['log_age'])) or (lage > max(EAF_i['log_age'])):
 			return 'ValueError'
-		if (eep < min(modtab_i['EEP'])) or (eep > max(modtab_i['EEP'])):
+		if (eep < min(EAF_i['EEP'])) or (eep > max(EAF_i['EEP'])):
 			return 'ValueError'
-		if (feh < min(modtab_i['[Fe/H]in'])) or (feh > max(modtab_i['[Fe/H]in'])):
+		if (feh < min(EAF_i['[Fe/H]in'])) or (feh > max(EAF_i['[Fe/H]in'])):
 			return 'ValueError'
 
-		values = np.stack([modtab_i[par] for par in self.parnames],axis=1)
 		try:
 			dataint = LinearNDInterpolator(
-					(modtab_i['log_age'],modtab_i['EEP'],modtab_i['[Fe/H]in']),
-					values,
+					(EAF_i['log_age'],EAF_i['EEP'],EAF_i['[Fe/H]in']),
+					valuestack_i,
 					fill_value=np.nan_to_num(-np.inf),
 					rescale=False
 					)(lage,eep,feh)
@@ -424,8 +437,12 @@ class StarPar(object):
 
 		for kk in self.bfpar.keys():
 			if kk in self.modphotbands:
-				obsphot = moddict[kk]+self.DM(dist)+self.red(band=kk,A_v=moddict['A_v'])
+				DM_i = self.DM(dist)
+				RED_i = self.red(Teff=moddict['Teff'],logg=moddict['log(g)'],FeH=moddict['[Fe/H]'],
+					band=kk,Av=moddict['A_v'])
+				obsphot = moddict[kk]+DM_i+RED_i
 				deltadict[kk] = (obsphot-self.bfpar[kk])/self.epar[kk]
+				# print kk, RED_i, DM_i,moddict['Teff'],moddict['log(g)'],moddict['[Fe/H]'],moddict['A_v'],dist
 			else:
 				deltadict[kk] = (moddict[kk]-self.bfpar[kk])/self.epar[kk]
 		chisq = np.sum([deltadict[kk]**2.0 for kk in self.bfpar.keys()])
@@ -440,66 +457,160 @@ class StarPar(object):
 		#distance in parsecs
 		return 5.0*np.log10(distance)-5.0
 
-	def red(self,Teff=None,band='V',A_v=0.0):
-		# Right now don't do anything with Teff, eventually have it correctly calculate Av/E(B-V), 
-		# currently only returns the reddening value for a solar template.
-		# All reddening laws taken from ADPS which uses the Fitz99 extinction curves (ssuming Av=3.1) 
-		# unless otherwise noted.
+	# def red(self,Teff=None,band='V',A_v=0.0):
+	# 	# Right now don't do anything with Teff, eventually have it correctly calculate Av/E(B-V), 
+	# 	# currently only returns the reddening value for a solar template.
+	# 	# All reddening laws taken from ADPS which uses the Fitz99 extinction curves (ssuming Av=3.1) 
+	# 	# unless otherwise noted.
 
-		# Gaia_G taken from Jordi+2010 w/ V-I = 0.702 (Sun)
-		# assume the CFHT ugriz is the same as SDSS ugriz (likely untrue)
-		# K_D51 manually calculated using Cadelli law
-		# Kp taken from Tim Morton's isochrone.py code
-		# WISE W1, W2, W3 taken from Davenport+2014 with Ar/Av = 0.83
-		# WISE W4 taken from Bilir+2011 (since not in Davenport+2014)
+	# 	# Gaia_G taken from Jordi+2010 w/ V-I = 0.702 (Sun)
+	# 	# assume the CFHT ugriz is the same as SDSS ugriz (likely untrue)
+	# 	# K_D51 manually calculated using Cadelli law
+	# 	# Kp taken from Tim Morton's isochrone.py code
+	# 	# WISE W1, W2, W3 taken from Davenport+2014 with Ar/Av = 0.83
+	# 	# WISE W4 taken from Bilir+2011 (since not in Davenport+2014)
 
-		# t_s = t[np.in1d(t['Teff'],[5000.0,6000.0])*np.in1d(t['logg'],[4.0,4.5])*np.in1d(t['[Fe/H]'],[0.0,0.25])]
+	# 	# t_s = t[np.in1d(t['Teff'],[5000.0,6000.0])*np.in1d(t['logg'],[4.0,4.5])*np.in1d(t['[Fe/H]'],[0.0,0.25])]
 
 
-		reddeninglaw = (
-			{
-			'U':1.62,
-			'B':1.31,
-			'V':1.00,
-			'R':0.77,
-			'I':0.56,
-			'B_T':1.38,
-			'V_T':1.03,
-			'H_P':0.95,
-			'Gaia_G':0.805,
-			'SDSS_u':1.61,
-			'SDSS_g':1.19,
-			'SDSS_r':0.83,
-			'SDSS_i':0.61,
-			'SDSS_z':0.45,
-			'CFHT_u':1.61,
-			'CFHT_g':1.19,
-			'CFHT_r':0.83,
-			'CFHT_i_new':0.61,
-			'CFHT_i_old':0.61,
-			'CFHT_z':0.45,
-			'J':0.27,
-			'H':0.17,
-			'Ks':0.12,
-			'K_D51':1.0942,
-			'Kp':0.859,
-			'W1':0.09*0.83,
-			'W2':0.05*0.83,
-			'W3':0.13*0.83,
-			'W4':0.056,
-			}
+	# 	reddeninglaw = (
+	# 		{
+	# 		'U':1.62,
+	# 		'B':1.31,
+	# 		'V':1.00,
+	# 		'R':0.77,
+	# 		'I':0.56,
+	# 		'B_T':1.38,
+	# 		'V_T':1.03,
+	# 		'H_P':0.95,
+	# 		'Gaia_G':0.805,
+	# 		'SDSS_u':1.61,
+	# 		'SDSS_g':1.19,
+	# 		'SDSS_r':0.83,
+	# 		'SDSS_i':0.61,
+	# 		'SDSS_z':0.45,
+	# 		'CFHT_u':1.61,
+	# 		'CFHT_g':1.19,
+	# 		'CFHT_r':0.83,
+	# 		'CFHT_i_new':0.61,
+	# 		'CFHT_i_old':0.61,
+	# 		'CFHT_z':0.45,
+	# 		'J':0.27,
+	# 		'H':0.17,
+	# 		'Ks':0.12,
+	# 		'K_D51':1.0942,
+	# 		'Kp':0.859,
+	# 		'W1':0.09*0.83,
+	# 		'W2':0.05*0.83,
+	# 		'W3':0.13*0.83,
+	# 		'W4':0.056,
+	# 		}
+	# 		)
+	# 	# pull ratio for band
+	# 	AxAv = reddeninglaw[band]
+	# 	# calculate specific Ax
+	# 	Ax = AxAv*A_v
+
+	# 	return Ax
+
+class Redden(object):
+	def __init__(self):
+		BC = Table(np.array(h5py.File('/Users/Phill/Astro/MIST/MIST_full.h5','r')['BC']))
+		BC_AV0 = BC[BC['Av'] == 0.0]
+		self.bands = BC.keys()
+		[self.bands.remove(x) for x in ['Teff', 'logg', '[Fe/H]', 'Av', 'Rv']]
+
+		self.redintr = LinearNDInterpolator(
+			(BC['Teff'],BC['logg'],BC['[Fe/H]'],BC['Av']),
+			np.stack([BC[bb] for bb in self.bands],axis=1),
+			rescale=True
 			)
-		# pull ratio for band
-		AxAv = reddeninglaw[band]
-		# calculate specific Ax
-		Ax = AxAv*A_v
+		self.redintr_0 = LinearNDInterpolator(
+			(BC_AV0['Teff'],BC_AV0['logg'],BC_AV0['[Fe/H]']),
+			np.stack([BC_AV0[bb] for bb in self.bands],axis=1),
+			rescale=True
+			)
 
-		return Ax
+	def red(self,Teff=5770.0,logg=4.44,FeH=0.0,band='V',Av=0.0):
+
+		if (Teff > 500000.0):
+			Teff = 500000.0
+		if (Teff < 2500.0):
+			Teff = 2500.0
+
+		if (logg < -4.0):
+			logg = -4.0
+		if (logg > 9.5):
+			logg = 9.5
+
+		if (FeH > 0.5):
+			FeH = 0.5
+		if (FeH < -2.0):
+			FeH = -2.0
+
+		inter0 = self.redintr_0(Teff,logg,FeH)
+		interi = self.redintr(Teff,logg,FeH,Av)
+
+		bandsel = np.array([True if x == band else False for x in self.bands],dtype=bool)
+		vsel = np.array([True if x == 'V' else False for x in self.bands],dtype=bool)
+		A_V = interi[vsel]-inter0[vsel]
+		A_X = interi[bandsel]-inter0[bandsel]
+		return (A_X/A_V)*Av
+
+
 
 if __name__ == '__main__':
 
 	# initialize StarPar class
 	STARPAR = StarPar()
+
+	print '-------------------------------'
+	print ' Doing: Test                   '
+	print ' Sun                           '
+	print ' Lit. Results say:             '
+	print ' Mass = 1.0 Msol        '
+	print ' Age = 4.57+-0.3 Gyr           '
+	print ' Radius = 1.0 Rsol   '
+	print '-------------------------------'
+	# test case
+	bfpar = {}
+	bfpar['Teff'] = 5777.0
+	bfpar['log(g)'] = 4.44
+	bfpar['[Fe/H]'] = 0.0
+	bfpar['parallax'] = 4.84814e-6
+	bfpar['V'] = -26.78
+	bfpar['B'] = -26.127
+	bfpar['U'] = -25.969
+	bfpar['R'] = -27.136
+	bfpar['I'] = -27.481
+
+	epar = {}
+	epar['Teff'] = 10.0
+	epar['log(g)'] = 0.01
+	epar['[Fe/H]'] = 0.001
+	epar['parallax'] = 0.05
+	epar['V'] = 0.003
+	epar['B'] = 0.003
+	epar['U'] = 0.009
+	epar['R'] = 0.003
+	epar['I'] = 0.003
+
+	# define any priors with dictionary
+	priordict = {}
+	priordict['Age'] = [1.0,15.0]
+	priordict['Mass'] = [0.25,3.0]
+	priordict['Rad'] = [0.1,3.0]
+
+	# name output file
+	outname = 'alphaCenA_test.dat'
+
+	# Now, set up and run the sampler:
+
+	results,p,cov = STARPAR(bfpar,epar,outname=outname,sampler='nestle')
+
+	print results.summary()
+	for ii,pp in enumerate(p):
+		print pp, np.sqrt(cov[ii,ii])
 
 	print '-------------------------------'
 	print ' Doing: Test                   '
@@ -548,8 +659,7 @@ if __name__ == '__main__':
 	print results.summary()
 	for ii,pp in enumerate(p):
 		print pp, np.sqrt(cov[ii,ii])
-
-	"""
+	
 	print '-------------------------------'
 	print ' Doing: Test                   '
 	print ' alpha Cen A w/ astroseis pars '
@@ -593,6 +703,7 @@ if __name__ == '__main__':
 	print results.summary()
 	for ii,pp in enumerate(p):
 		print pp, np.sqrt(cov[ii,ii])
+
 
 	print '-------------------------------'
 	print ' Doing: Test                   '
