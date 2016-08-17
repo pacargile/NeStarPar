@@ -29,7 +29,7 @@ class StarPar(object):
 
 			# parse MIST models to only include up to end of helium burning (TACHeB), only to ages < 16 Gyr, and 
 			# stellar masses < 50 Msol (EEP < 707)
-			cond = (EAF_i['EEP'] <= 605) & (EAF_i['log_age'] <= np.log10(18.0*10.0**9.0)) & (BSP_i['star_mass'] < 50.0)
+			cond = (EAF_i['EEP'] <= 605) & (EAF_i['log_age'] <= np.log10(15.0*10.0**9.0)) & (BSP_i['star_mass'] < 30.0)
 			self.EAF = EAF_i[cond]
 			self.BSP = BSP_i[cond]
 			self.PHOT = PHOT_i[cond]
@@ -56,7 +56,8 @@ class StarPar(object):
 
 			# Ysurf = 0.249 + ((0.2703-0.249)/0.0142)*self.BSP['Z_surf'] # from Asplund et al. 2009
 			# Xsurf = 1 - Ysurf - self.BSP['Z_surf']
-			self.BSP['[Fe/H]'] = np.log10(self.BSP['Z_surf']/Xsurf) - np.log10(0.0199)
+			# self.BSP['[Fe/H]'] = np.log10(self.BSP['Z_surf']/Xsurf) - np.log10(0.0199)
+			self.BSP['[Fe/H]'] = np.log10(self.BSP['Z_surf']/Xsurf) - np.log10(0.0181)
 
 		else:
 			print 'ONLY WORKS ON MIST'
@@ -281,11 +282,15 @@ class StarPar(object):
 	def run_nestle(self):
 		print 'Start Nestle'
 		startmct = datetime.now()
-		result = nestle.sample(self.lnp_call_nestle,self.prior_trans,self.ndim,method='multi',npoints=200,callback=self.nestle_callback)
+		result = nestle.sample(
+			self.lnp_call_nestle,self.prior_trans,self.ndim,method='multi',
+			npoints=200,callback=self.nestle_callback)
 		p,cov = nestle.mean_and_cov(result.samples,result.weights)
 		return result,p,cov
 
 	def nestle_callback(self,iterinfo):
+		# write data to outfile
+
 		# print iteration number and evidence at specific iterations
 		if iterinfo['it'] % 500 == 0:
 			if iterinfo['logz'] < -10E+6:
@@ -300,8 +305,8 @@ class StarPar(object):
 		fehran = (self.minmax['FEH'][1]-self.minmax['FEH'][0])#*0.95 
 		if self.fitphotbool:
 			age,eep,feh,dist,A_v = par
-			distran = 10000.0
-			Avran = 5.0
+			distran = 100.0
+			Avran = 1.0
 			return np.array([
 				ageran*age+self.minmax['AGE'][0],
 				eepran*eep+self.minmax['EEP'][0],
@@ -322,10 +327,10 @@ class StarPar(object):
 
 	def lnp_call_nestle(self,par):
 		# run modcall to get predicted parameters
-		moddict = self.modcall(par)
-		if moddict == "ValueError":
+		self.moddict = self.modcall(par)
+		if self.moddict == "ValueError":
 			return np.nan_to_num(-np.inf)
-		lnlike = self.loglhood(moddict)
+		lnlike = self.loglhood(self.moddict)
 		return lnlike
 
 
@@ -438,11 +443,10 @@ class StarPar(object):
 		for kk in self.bfpar.keys():
 			if kk in self.modphotbands:
 				DM_i = self.DM(dist)
-				RED_i = self.red(Teff=moddict['Teff'],logg=moddict['log(g)'],FeH=moddict['[Fe/H]'],
+				RED_i = self.red(Teff=moddict['Teff'],logg=moddict['log(g)'],FeH=moddict['[Fe/H]in'],
 					band=kk,Av=moddict['A_v'])
 				obsphot = moddict[kk]+DM_i+RED_i
 				deltadict[kk] = (obsphot-self.bfpar[kk])/self.epar[kk]
-				# print kk, RED_i, DM_i,moddict['Teff'],moddict['log(g)'],moddict['[Fe/H]'],moddict['A_v'],dist
 			else:
 				deltadict[kk] = (moddict[kk]-self.bfpar[kk])/self.epar[kk]
 		chisq = np.sum([deltadict[kk]**2.0 for kk in self.bfpar.keys()])
@@ -456,62 +460,6 @@ class StarPar(object):
 	def DM_distance(self,distance):
 		#distance in parsecs
 		return 5.0*np.log10(distance)-5.0
-
-	# def red(self,Teff=None,band='V',A_v=0.0):
-	# 	# Right now don't do anything with Teff, eventually have it correctly calculate Av/E(B-V), 
-	# 	# currently only returns the reddening value for a solar template.
-	# 	# All reddening laws taken from ADPS which uses the Fitz99 extinction curves (ssuming Av=3.1) 
-	# 	# unless otherwise noted.
-
-	# 	# Gaia_G taken from Jordi+2010 w/ V-I = 0.702 (Sun)
-	# 	# assume the CFHT ugriz is the same as SDSS ugriz (likely untrue)
-	# 	# K_D51 manually calculated using Cadelli law
-	# 	# Kp taken from Tim Morton's isochrone.py code
-	# 	# WISE W1, W2, W3 taken from Davenport+2014 with Ar/Av = 0.83
-	# 	# WISE W4 taken from Bilir+2011 (since not in Davenport+2014)
-
-	# 	# t_s = t[np.in1d(t['Teff'],[5000.0,6000.0])*np.in1d(t['logg'],[4.0,4.5])*np.in1d(t['[Fe/H]'],[0.0,0.25])]
-
-
-	# 	reddeninglaw = (
-	# 		{
-	# 		'U':1.62,
-	# 		'B':1.31,
-	# 		'V':1.00,
-	# 		'R':0.77,
-	# 		'I':0.56,
-	# 		'B_T':1.38,
-	# 		'V_T':1.03,
-	# 		'H_P':0.95,
-	# 		'Gaia_G':0.805,
-	# 		'SDSS_u':1.61,
-	# 		'SDSS_g':1.19,
-	# 		'SDSS_r':0.83,
-	# 		'SDSS_i':0.61,
-	# 		'SDSS_z':0.45,
-	# 		'CFHT_u':1.61,
-	# 		'CFHT_g':1.19,
-	# 		'CFHT_r':0.83,
-	# 		'CFHT_i_new':0.61,
-	# 		'CFHT_i_old':0.61,
-	# 		'CFHT_z':0.45,
-	# 		'J':0.27,
-	# 		'H':0.17,
-	# 		'Ks':0.12,
-	# 		'K_D51':1.0942,
-	# 		'Kp':0.859,
-	# 		'W1':0.09*0.83,
-	# 		'W2':0.05*0.83,
-	# 		'W3':0.13*0.83,
-	# 		'W4':0.056,
-	# 		}
-	# 		)
-	# 	# pull ratio for band
-	# 	AxAv = reddeninglaw[band]
-	# 	# calculate specific Ax
-	# 	Ax = AxAv*A_v
-
-	# 	return Ax
 
 class Redden(object):
 	def __init__(self):
@@ -564,6 +512,7 @@ if __name__ == '__main__':
 	# initialize StarPar class
 	STARPAR = StarPar()
 
+	"""
 	print '-------------------------------'
 	print ' Doing: Test                   '
 	print ' Sun                           '
@@ -810,7 +759,7 @@ if __name__ == '__main__':
 	bfpar = {}
 	bfpar['Teff'] = 4788.0
 	bfpar['log(g)'] = 3.47
-	bfpar['[Fe/H]'] = 0.15
+	bfpar['[Fe/H]in'] = 0.15
 	bfpar['parallax'] = 32.79
 	bfpar['SDSS_u'] = 7.58
 	bfpar['SDSS_g'] = 5.28
@@ -822,7 +771,7 @@ if __name__ == '__main__':
 	epar = {}
 	epar['Teff'] = 70.0
 	epar['log(g)'] = 0.09
-	epar['[Fe/H]'] = 0.05
+	epar['[Fe/H]in'] = 0.05
 	epar['parallax'] = 0.21
 	epar['SDSS_u'] = 0.06 
 	epar['SDSS_g'] = 0.04
@@ -846,7 +795,6 @@ if __name__ == '__main__':
 	print results.summary()
 	for ii,pp in enumerate(p):
 		print pp, np.sqrt(cov[ii,ii])
-
 
 	print '-------------------------------'
 	print ' Doing: Test                   '
@@ -949,7 +897,7 @@ if __name__ == '__main__':
 	for ii,pp in enumerate(p):
 		print pp, np.sqrt(cov[ii,ii])
 
-
+	"""
 	print '-------------------------------'
 	print ' Doing: Test                   '
 	print ' Gl 15 A                       '
@@ -1000,7 +948,6 @@ if __name__ == '__main__':
 	for ii,pp in enumerate(p):
 		print pp, np.sqrt(cov[ii,ii])
 
-	"""
 
 	# # fullrun BI-> 100, Nsteps -> 400, nwalkers = 200, threads=4
 	# nwalkers = 50
