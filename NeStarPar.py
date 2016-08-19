@@ -22,10 +22,11 @@ class StarPar(object):
 
 		if model == 'MIST':
 			# read in MIST models
-			EAF_i = Table(np.array(h5py.File('/Users/Phill/Astro/MIST/MIST_full.h5','r')['EAF']))
-			BSP_i = Table(np.array(h5py.File('/Users/Phill/Astro/MIST/MIST_full.h5','r')['BSP']))
-			PHOT_i = Table(np.array(h5py.File('/Users/Phill/Astro/MIST/MIST_full.h5','r')['PHOT']))
-			ALLSP_i = Table(np.array(h5py.File('/Users/Phill/Astro/MIST/MIST_full.h5','r')['All_SP']))
+			MISTFILE = '/Users/pcargile/Astro/SteEvoMod/MIST_full.h5'
+			EAF_i = Table(np.array(h5py.File(MISTFILE,'r')['EAF']))
+			BSP_i = Table(np.array(h5py.File(MISTFILE,'r')['BSP']))
+			PHOT_i = Table(np.array(h5py.File(MISTFILE,'r')['PHOT']))
+			ALLSP_i = Table(np.array(h5py.File(MISTFILE,'r')['All_SP']))
 
 			# parse MIST models to only include up to end of helium burning (TACHeB), only to ages < 16 Gyr, and 
 			# stellar masses < 50 Msol (EEP < 707)
@@ -96,12 +97,12 @@ class StarPar(object):
 		self.dist = np.sqrt( (2.0**2.0) + (2.0**2.0) + (2.0**2.0) )
 
 
-	def __call__(self, bfpar,epar,priordict=None,outname='TEST.dat',sampler='emcee',p0mean=None,p0std=None,nwalkers=100,nthreads=0,nburnsteps=0,nsteps=100):
+	def __call__(self, bfpar,epar,priordict={},outfile='TEST.dat',sampler='emcee',p0mean=None,p0std=None,nwalkers=100,nthreads=0,nburnsteps=0,nsteps=100):
 		# write input into self
 		self.bfpar = bfpar
 		self.epar = epar
 		self.priordict = priordict
-		self.outname = outname
+		self.outfile = outfile
 
 		if sampler == 'emcee':
 			self.p0mean = p0mean
@@ -127,19 +128,95 @@ class StarPar(object):
 		if self.fitphotbool:
 			for kk in self.bfpar.keys():
 				if kk in ['Distance','distance','dist','Dist']:
+					print 'FITTING DISTANCE'
 					self.fitdistorpara = "Dist"
-					bfpar["Dist"] = bfpar.pop(kk)
-					epar["Dist"] = epar.pop(kk)
+					self.bfpar["Dist"] = bfpar.pop(kk)
+					self.epar["Dist"] = epar.pop(kk)
 					self.DM = self.DM_distance
 					break
-				elif kk in ['Parallax','parallax','par','Par']:
+				elif kk in ['Parallax','parallax','par','Par','Para','para']:
+					print 'FITTING PARALLAX'
 					self.fitdistorpara = "Para"
-					bfpar["Para"] = bfpar.pop(kk)
-					epar["Para"] = epar.pop(kk)
+					self.bfpar["Para"] = bfpar.pop(kk)
+					self.epar["Para"] = epar.pop(kk)
 					self.DM = self.DM_parallax
 					break
 				else:
 					pass
+
+		# remove dist or para from outfilepars
+		self.outfilepars = self.bfpar.keys()
+		if self.fitdistorpara == "Dist":
+			self.outfilepars.remove('Dist')
+		if self.fitdistorpara == "Para":
+			self.outfilepars.remove('Para')
+
+		# add interpolated values
+		if self.fitphotbool:
+			if self.fitdistorpara == 'Dist':
+				self.outfilepars = ['EEP','Age','[Fe/H]in','Dist','Av']+self.outfilepars
+			elif self.fitdistorpara == 'Para':
+				self.outfilepars = ['EEP','Age','[Fe/H]in','Para','Av']+self.outfilepars
+			else:
+				pass
+		else:
+			self.outfilepars = ['EEP','Age','[Fe/H]in']+self.outfilepars
+
+		# init output file
+		self.outff = open(self.outfile, 'w')
+		self.outff.write('ITER ')
+		for pp in self.outfilepars:
+			self.outff.write('{0} '.format(pp))
+		self.outff.write('logz logwt\n')
+
+		# define some default priors based on grid limits,
+		# else use the user input priors
+
+		if 'EEP' not in self.priordict.keys():
+			self.eepran = (self.minmax['EEP'][1]-self.minmax['EEP'][0])
+			self.mineep = self.minmax['EEP'][0]
+		else:
+			self.eepran = (self.priordict['EEP'][1]-self.priordict['EEP'][0])
+			self.mineep = self.priordict['EEP'][0]
+
+		if 'Age' not in self.priordict.keys():
+			self.ageran = (10.0**self.minmax['AGE'][1]-10.0**self.minmax['AGE'][0])/(10.0**9.0)
+			self.minage = (10.0**self.minmax['AGE'][0])/(10.0**9.0)
+		else:
+			self.ageran = (self.priordict['Age'][1]-self.priordict['Age'][0])
+			self.minage = self.priordict['Age'][0]
+
+		if '[Fe/H]in' not in self.priordict.keys():
+			self.fehran = (self.minmax['FEH'][1]-self.minmax['FEH'][0])
+			self.minfeh = self.minmax['FEH'][0]
+		else:
+			self.fehran = (self.priordict['[Fe/H]in'][1]-self.priordict['[Fe/H]in'][0])
+			self.minfeh = self.priordict['[Fe/H]in'][0]
+
+		if self.fitphotbool:
+			if self.fitdistorpara == 'Dist':
+				if 'Dist' not in self.priordict.keys():
+					self.distran = 10000.0 # 10 kpc standard prior
+					self.mindist = 0.0
+				else:
+					self.distran = (self.priordict['Dist'][1]-self.priordict['Dist'][0])
+					self.mindist = self.priordict['Dist'][0]
+			elif self.fitdistorpara == 'Para':
+				if 'Para' not in self.priordict.keys():
+					self.distran = 1000.0 # 1 pc lower limt standard prior
+					self.mindist = 0.0
+				else:
+					self.distran = (self.priordict['Para'][1]-self.priordict['Para'][0])
+					self.mindist = self.priordict['Para'][0]
+			else:
+				pass
+
+			if 'Av' not in self.priordict.keys():
+				self.Avran = 6.0 # set by Av grid
+				self.minAv = 0.0
+			else:
+				self.Avran = (self.priordict['Av'][1]-self.priordict['Av'][0])
+				self.minAv = self.priordict['Av'][0]
 
 
 		# start timer
@@ -149,11 +226,14 @@ class StarPar(object):
 			self.run_emcee()
 		elif sampler == 'nestle':
 			return self.run_nestle()
-		elif sampler == 'initalize':
+		elif sampler == 'init':
 			return None
 		else:
 			print 'DID NOT UNDERSTAND WHICH SAMPLER TO USE!'
 			return None
+
+		# close output file
+		self.outff.close()
 
 	def run_emcee(self):
 
@@ -170,9 +250,9 @@ class StarPar(object):
 					# just set it to 1kpc with a stddev of 250 pc and cross your fingers
 					self.p0mean = np.append(self.p0mean,1000.0)
 					self.p0std = np.append(self.p0std,250.0)
-				if 'A_v' in self.priordict.keys():
-					self.p0mean = np.append(self.p0mean,(self.priordict['A_v'][1]+self.priordict['A_v'][0])/2.0)
-					self.p0std = np.append(self.p0std,(self.priordict['A_v'][1]-self.priordict['A_v'][0])/10.0)
+				if 'Av' in self.priordict.keys():
+					self.p0mean = np.append(self.p0mean,(self.priordict['Av'][1]+self.priordict['Av'][0])/2.0)
+					self.p0std = np.append(self.p0std,(self.priordict['Av'][1]-self.priordict['Av'][0])/10.0)
 				else:
 					self.p0mean = np.append(self.p0mean,1.0)
 					self.p0std = np.append(self.p0std,0.1)
@@ -211,7 +291,7 @@ class StarPar(object):
 			with open(outname, "w") as f:
 				f.write('WN EEP Age [Fe/H]in')
 				if self.fitphotbool:
-					f.write(' Dist A_v')
+					f.write(' Dist Av')
 				for pp in self.parnames:
 					f.write(' {0}'.format(pp))
 				f.write(' lnprob\n')
@@ -284,43 +364,55 @@ class StarPar(object):
 		startmct = datetime.now()
 		result = nestle.sample(
 			self.lnp_call_nestle,self.prior_trans,self.ndim,method='multi',
-			npoints=200,callback=self.nestle_callback)
+			npoints=1000,callback=self.nestle_callback)#,update_interval=300)#,dlogz=0.5)
 		p,cov = nestle.mean_and_cov(result.samples,result.weights)
 		return result,p,cov
 
 	def nestle_callback(self,iterinfo):
 		# write data to outfile
+		self.outff.write('{0} '.format(iterinfo['it']))
+		# write parameters at iteration if not ValueError
+		if self.moddict != 'ValueError':
+			for pp in self.outfilepars:
+				self.outff.write('{0} '.format(self.moddict[pp]))
+		else:
+			for _ in range(len(self.outfilepars)):
+				self.outff.write('-999.99 ')
+
+		# write the evidence
+		self.outff.write('{0} '.format(iterinfo['logz']))
+		# write the weight
+		self.outff.write('{0} '.format(iterinfo['logwt']))
+		# write new line
+		self.outff.write('\n')
 
 		# print iteration number and evidence at specific iterations
 		if iterinfo['it'] % 500 == 0:
 			if iterinfo['logz'] < -10E+6:
-				print 'Iter: {0} < -10M'.format(iterinfo['it'])
+				print 'Iter: {0} log(z) < -10M'.format(iterinfo['it'])
 			else:
-				print 'Iter: {0} = {1}'.format(iterinfo['it'],iterinfo['logz'])
+				print 'Iter: {0} log(z) = {1}'.format(iterinfo['it'],iterinfo['logz'])
 
 
 	def prior_trans(self,par):
-		eepran = (self.minmax['EEP'][1]-self.minmax['EEP'][0])#*0.95
-		ageran = (self.minmax['AGE'][1]-self.minmax['AGE'][0])#*0.95 
-		fehran = (self.minmax['FEH'][1]-self.minmax['FEH'][0])#*0.95 
+		""" project the parameters onto the prior unit cube """
+
 		if self.fitphotbool:
 			age,eep,feh,dist,A_v = par
-			distran = 100.0
-			Avran = 1.0
 			return np.array([
-				ageran*age+self.minmax['AGE'][0],
-				eepran*eep+self.minmax['EEP'][0],
-				fehran*feh+self.minmax['FEH'][0],
-				distran*dist,
-				Avran*A_v
+				self.ageran*age+self.minage,
+				self.eepran*eep+self.mineep,
+				self.fehran*feh+self.minfeh,
+				self.distran*dist+self.mindist,
+				self.Avran*A_v+self.minAv
 				])
 
 		else:
 			age,eep,feh = par
 			return np.array([
-				ageran*age+self.minmax['AGE'][0],
-				eepran*eep+self.minmax['EEP'][0],
-				fehran*feh+self.minmax['FEH'][0],
+				self.ageran*age+self.minage,
+				self.eepran*eep+self.mineep,
+				self.fehran*feh+self.minfeh
 				])
 
 
@@ -378,7 +470,7 @@ class StarPar(object):
 
 		try:
 			if self.fitphotbool:
-				datadict['A_v'] = A_v
+				datadict['Av'] = A_v
 			if self.fitdistorpara == "Dist":
 				datadict['Dist'] = dist
 			if self.fitdistorpara == "Para":
@@ -444,7 +536,7 @@ class StarPar(object):
 			if kk in self.modphotbands:
 				DM_i = self.DM(dist)
 				RED_i = self.red(Teff=moddict['Teff'],logg=moddict['log(g)'],FeH=moddict['[Fe/H]in'],
-					band=kk,Av=moddict['A_v'])
+					band=kk,Av=moddict['Av'])
 				obsphot = moddict[kk]+DM_i+RED_i
 				deltadict[kk] = (obsphot-self.bfpar[kk])/self.epar[kk]
 			else:
@@ -463,7 +555,7 @@ class StarPar(object):
 
 class Redden(object):
 	def __init__(self):
-		BC = Table(np.array(h5py.File('/Users/Phill/Astro/MIST/MIST_full.h5','r')['BC']))
+		BC = Table(np.array(h5py.File('/Users/pcargile/Astro/SteEvoMod/MIST_full.h5','r')['BC']))
 		BC_AV0 = BC[BC['Av'] == 0.0]
 		self.bands = BC.keys()
 		[self.bands.remove(x) for x in ['Teff', 'logg', '[Fe/H]', 'Av', 'Rv']]
@@ -511,104 +603,7 @@ if __name__ == '__main__':
 
 	# initialize StarPar class
 	STARPAR = StarPar()
-
-	"""
-	print '-------------------------------'
-	print ' Doing: Test                   '
-	print ' Sun                           '
-	print ' Lit. Results say:             '
-	print ' Mass = 1.0 Msol        '
-	print ' Age = 4.57+-0.3 Gyr           '
-	print ' Radius = 1.0 Rsol   '
-	print '-------------------------------'
-	# test case
-	bfpar = {}
-	bfpar['Teff'] = 5777.0
-	bfpar['log(g)'] = 4.44
-	bfpar['[Fe/H]'] = 0.0
-	bfpar['parallax'] = 4.84814e-6
-	bfpar['V'] = -26.78
-	bfpar['B'] = -26.127
-	bfpar['U'] = -25.969
-	bfpar['R'] = -27.136
-	bfpar['I'] = -27.481
-
-	epar = {}
-	epar['Teff'] = 10.0
-	epar['log(g)'] = 0.01
-	epar['[Fe/H]'] = 0.001
-	epar['parallax'] = 0.05
-	epar['V'] = 0.003
-	epar['B'] = 0.003
-	epar['U'] = 0.009
-	epar['R'] = 0.003
-	epar['I'] = 0.003
-
-	# define any priors with dictionary
-	priordict = {}
-	priordict['Age'] = [1.0,15.0]
-	priordict['Mass'] = [0.25,3.0]
-	priordict['Rad'] = [0.1,3.0]
-
-	# name output file
-	outname = 'alphaCenA_test.dat'
-
-	# Now, set up and run the sampler:
-
-	results,p,cov = STARPAR(bfpar,epar,outname=outname,sampler='nestle')
-
-	print results.summary()
-	for ii,pp in enumerate(p):
-		print pp, np.sqrt(cov[ii,ii])
-
-	print '-------------------------------'
-	print ' Doing: Test                   '
-	print ' KELT-11                       '
-	print '-------------------------------'
-	# test case
-	bfpar = {}
-	bfpar['Teff'] = 5390.0
-	bfpar['log(g)'] = 3.79
-	bfpar['[Fe/H]'] = 0.19
-	bfpar['parallax'] = 9.76
-	bfpar['J'] = 6.616
-	bfpar['H'] = 6.251
-	bfpar['Ks'] = 6.122
-	bfpar['W1'] = 6.152
-	bfpar['W2'] = 6.068
-	bfpar['W3'] = 6.157
-	bfpar['W4'] = 6.088
-
-
-	epar = {}
-	epar['Teff'] = 50.0
-	epar['log(g)'] = 0.1
-	epar['[Fe/H]'] = 0.08
-	epar['parallax'] = 0.85
-	epar['J'] = 0.024
-	epar['H'] = 0.042
-	epar['Ks'] = 0.018
-	epar['W1'] = 0.1
-	epar['W2'] = 0.036
-	epar['W3'] = 0.015
-	epar['W4'] = 0.048
-
-	# define any priors with dictionary
-	priordict = {}
-	priordict['Age'] = [1.0,15.0]
-	priordict['Mass'] = [0.25,5.0]
-	priordict['Rad'] = [0.1,5.0]
-
-	# name output file
-	outname = 'KELT11_test.dat'
-
-	# Now, set up and run the sampler:
-	results,p,cov = STARPAR(bfpar,epar,outname=outname,sampler='nestle')
-
-	print results.summary()
-	for ii,pp in enumerate(p):
-		print pp, np.sqrt(cov[ii,ii])
-	
+		
 	print '-------------------------------'
 	print ' Doing: Test                   '
 	print ' alpha Cen A w/ astroseis pars '
@@ -703,251 +698,6 @@ if __name__ == '__main__':
 	print results.summary()
 	for ii,pp in enumerate(p):
 		print pp, np.sqrt(cov[ii,ii])
-
-
-	print '-------------------------------'
-	print ' Doing: Test                   '
-	print ' eps Eri                      '
-	print ' Lit. Results say:             '
-	print ' Mass = 0.82+-0.05 Msol        '
-	print ' Age ~ 1 Gyr            '
-	print ' Radius = 0.74+-0.01 Rsol   '
-	print '-------------------------------'
-	# test case
-	bfpar = {}
-	bfpar['Teff'] = 5039.0
-	bfpar['log(g)'] = 4.57
-	bfpar['[Fe/H]'] = -0.13
-	bfpar['parallax'] = 311.73
-	bfpar['V'] = 3.73
-	bfpar['Ks'] = 1.78
-
-	epar = {}
-	epar['Teff'] = 126.0
-	epar['log(g)'] = 0.1
-	epar['[Fe/H]'] = 0.04
-	epar['parallax'] = 0.11
-	epar['V'] = 0.01
-	epar['Ks'] = 0.29
-
-	# define any priors with dictionary
-	priordict = {}
-	priordict['Age'] = [1.0,15.0]
-	priordict['Mass'] = [0.25,3.0]
-	priordict['Rad'] = [0.1,3.0]
-
-	# name output file
-	outname = 'epsEri_test.dat'
-
-	# Now, set up and run the sampler:
-
-	results,p,cov = STARPAR(bfpar,epar,outname=outname,sampler='nestle')
-
-	print results.summary()
-	for ii,pp in enumerate(p):
-		print pp, np.sqrt(cov[ii,ii])
-
-	print '-------------------------------'
-	print ' Doing: Test                   '
-	print ' kappa CrB                     '
-	print ' Lit. Results say:             '
-	print ' Mass = 1.47+-0.04 Msol        '
-	print ' Age = 3.42+0.32-0.25 Myr      '
-	print ' Radius = 5.06+-0.04 Rsol      '
-	print '-------------------------------'
-	# test case
-	bfpar = {}
-	bfpar['Teff'] = 4788.0
-	bfpar['log(g)'] = 3.47
-	bfpar['[Fe/H]in'] = 0.15
-	bfpar['parallax'] = 32.79
-	bfpar['SDSS_u'] = 7.58
-	bfpar['SDSS_g'] = 5.28
-	bfpar['SDSS_r'] = 4.49
-	bfpar['SDSS_i'] = 4.26
-	bfpar['SDSS_z'] = 4.14
-
-
-	epar = {}
-	epar['Teff'] = 70.0
-	epar['log(g)'] = 0.09
-	epar['[Fe/H]in'] = 0.05
-	epar['parallax'] = 0.21
-	epar['SDSS_u'] = 0.06 
-	epar['SDSS_g'] = 0.04
-	epar['SDSS_r'] = 0.03
-	epar['SDSS_i'] = 0.02
-	epar['SDSS_z'] = 0.02
-
-	# define any priors with dictionary
-	priordict = {}
-	priordict['Age'] = [0.0,15.0]
-	priordict['Mass'] = [0.25,3.0]
-	priordict['Rad'] = [0.1,10.0]
-
-	# name output file
-	outname = 'kapCrB_test.dat'
-
-	# Now, set up and run the sampler:
-
-	results,p,cov = STARPAR(bfpar,epar,outname=outname,sampler='nestle')
-
-	print results.summary()
-	for ii,pp in enumerate(p):
-		print pp, np.sqrt(cov[ii,ii])
-
-	print '-------------------------------'
-	print ' Doing: Test                   '
-	print ' HR 8799                       '
-	print ' Lit. Results say:             '
-	print ' Mass = 1.47+-0.04 Msol        '
-	print ' Age = 30-90 Myr               '
-	print ' Radius = 1.44+-0.06 Rsol      '
-	print '-------------------------------'
-	# test case
-	bfpar = {}
-	bfpar['Teff'] = 7430.0
-	bfpar['log(g)'] = 4.35
-	bfpar['[Fe/H]'] = -0.47
-	bfpar['parallax'] = 25.38
-	bfpar['U'] = 6.191
-	bfpar['B'] = 6.235
-	bfpar['V'] = 5.980
-	bfpar['J'] = 5.383
-	bfpar['H'] = 5.280
-	bfpar['Ks'] = 5.240
-
-
-	epar = {}
-	epar['Teff'] = 75.0
-	epar['log(g)'] = 0.05
-	epar['[Fe/H]'] = 0.1
-	epar['parallax'] = 0.70
-	epar['U'] = 0.016 
-	epar['B'] = 0.016
-	epar['V'] = 0.016
-	epar['J'] = 0.027
-	epar['H'] = 0.018
-	epar['Ks'] = 0.018
-
-	# define any priors with dictionary
-	priordict = {}
-	priordict['Age'] = [0.0,15.0]
-	priordict['Mass'] = [0.25,3.0]
-	priordict['Rad'] = [0.1,10.0]
-
-	# name output file
-	outname = 'HD8799_test.dat'
-
-	# Now, set up and run the sampler:
-
-	results,p,cov = STARPAR(bfpar,epar,outname=outname,sampler='nestle')
-
-	print results.summary()
-	for ii,pp in enumerate(p):
-		print pp, np.sqrt(cov[ii,ii])
-
-
-	print '-------------------------------'
-	print ' Doing: Test                   '
-	print ' HR 7924                       '
-	print ' Lit. Results say:             '
-	print ' Mass = 0.832+-0.03 Msol       '
-	print ' Age =  11.5 +- 0.5 Myr               '
-	print ' Radius = 0.7821+-0.0258 Rsol  '
-	print '-------------------------------'
-	# test case
-	bfpar = {}
-	bfpar['Teff'] = 5075.0
-	bfpar['log(g)'] = 4.59
-	bfpar['[Fe/H]'] = -0.15
-	bfpar['parallax'] = 2.31
-	bfpar['B'] = 8.011
-	bfpar['V'] = 7.185
-	bfpar['J'] = 5.618
-	bfpar['H'] = 5.231
-	bfpar['Ks'] = 5.159
-
-
-	epar = {}
-	epar['Teff'] = 83.0
-	epar['log(g)'] = 0.02
-	epar['[Fe/H]'] = 0.03
-	epar['parallax'] = 0.32
-	epar['B'] = 0.1
-	epar['V'] = 0.1
-	epar['J'] = 0.026
-	epar['H'] = 0.033
-	epar['Ks'] = 0.020
-
-	# define any priors with dictionary
-	priordict = {}
-	priordict['Age'] = [0.0,15.0]
-	priordict['Mass'] = [0.25,3.0]
-	priordict['Rad'] = [0.1,10.0]
-
-	# name output file
-	outname = 'HR7924_test.dat'
-
-	# Now, set up and run the sampler:
-
-	results,p,cov = STARPAR(bfpar,epar,outname=outname,sampler='nestle')
-
-	print results.summary()
-	for ii,pp in enumerate(p):
-		print pp, np.sqrt(cov[ii,ii])
-
-	"""
-	print '-------------------------------'
-	print ' Doing: Test                   '
-	print ' Gl 15 A                       '
-	print ' Lit. Results say:             '
-	print ' Mass = 0.375+-0.06 Msol       '
-	print ' Age ~ 5 Gyr                   '
-	print ' Radius = 0.3863 +- 0.0021 Rsol'
-	print '-------------------------------'
-	# test case
-	bfpar = {}
-	bfpar['Teff'] = 3567.0
-	bfpar['log(g)'] = 4.90
-	bfpar['[Fe/H]'] = -0.32
-	bfpar['parallax'] = 278.76
-	bfpar['B'] = 9.63
-	bfpar['V'] = 8.08
-	bfpar['J'] = 4.82
-	bfpar['H'] = 4.25
-	bfpar['Ks'] = 4.03
-	bfpar['SDSS_i'] = 7.282
-
-	epar = {}
-	epar['Teff'] = 11.0
-	epar['log(g)'] = 0.17
-	epar['[Fe/H]'] = 0.17
-	epar['parallax'] = 0.77
-	epar['B'] = 0.05
-	epar['V'] = 0.01
-	epar['J'] = 0.1
-	epar['H'] = 0.1
-	epar['Ks'] = 0.1
-	epar['SDSS_i'] = 0.01
-
-	# define any priors with dictionary
-	priordict = {}
-	priordict['Age'] = [0.0,15.0]
-	priordict['Mass'] = [0.1,3.0]
-	priordict['Rad'] = [0.1,10.0]
-
-	# name output file
-	outname = 'Gl15A_test.dat'
-
-	# Now, set up and run the sampler:
-
-	results,p,cov = STARPAR(bfpar,epar,outname=outname,sampler='nestle')
-
-	print results.summary()
-	for ii,pp in enumerate(p):
-		print pp, np.sqrt(cov[ii,ii])
-
 
 	# # fullrun BI-> 100, Nsteps -> 400, nwalkers = 200, threads=4
 	# nwalkers = 50
