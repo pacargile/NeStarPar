@@ -16,14 +16,19 @@ class StarPar(object):
 	"""
 	Class for StarParMCMC
 	"""
-	def __init__(self,model=None):
+	def __init__(self,model=None,stripeindex=None):
 
 		if model == None:
 			model = 'MIST'
 
 		if model == 'MIST':
 			# read in MIST models
-			MISTFILE = '/Users/Phill/Astro/MIST/MIST_full.h5'
+			MISTFILE = '/Users/pcargile/Astro/SteEvoMod/MIST_full.h5'
+			# if stripeindex == None:
+			# 	MISTFILE = '/n/regal/conroy_lab/pac/MISTFILES/MIST_full_1.h5'
+			# else:
+			# 	MISTFILE = '/n/regal/conroy_lab/pac/MISTFILES/MIST_full_{0}.h5'.format(stripeindex)
+			print 'USING MODEL: ', MISTFILE
 			EAF_i = Table(np.array(h5py.File(MISTFILE,'r')['EAF']))
 			BSP_i = Table(np.array(h5py.File(MISTFILE,'r')['BSP']))
 			PHOT_i = Table(np.array(h5py.File(MISTFILE,'r')['PHOT']))
@@ -31,14 +36,18 @@ class StarPar(object):
 
 			# parse MIST models to only include up to end of helium burning (TACHeB), only to ages < 16 Gyr, and 
 			# stellar masses < 50 Msol (EEP < 707)
-			cond = (EAF_i['EEP'] <= 605) & (EAF_i['log_age'] <= np.log10(17.0*10.0**9.0)) & (BSP_i['star_mass'] < 30.0)
+			cond = (EAF_i['EEP'] <= 707) & (EAF_i['log_age'] <= np.log10(17.0*10.0**9.0)) & (BSP_i['star_mass'] < 30.0)
 			self.EAF = EAF_i[cond]
 			self.BSP = BSP_i[cond]
 			self.PHOT = PHOT_i[cond]
 			self.ALLSP = ALLSP_i[cond]
 			Xsurf = self.ALLSP['surface_h1'].copy()
+			C12surf = self.ALLSP['surface_c12'].copy()
+			C13surf = self.ALLSP['surface_c13'].copy()
+			N14surf   = self.ALLSP['surface_n14'].copy()
+			O16surf   = self.ALLSP['surface_o16'].copy()
+			self.BSP['init_Mass'] = self.ALLSP['initial_mass']
 			del(self.ALLSP)
-
 
 			# define the available photometric filters
 			self.modphotbands = self.PHOT.keys()
@@ -56,10 +65,27 @@ class StarPar(object):
 			self.BSP['Teff'] = 10.0**(self.BSP['log(Teff)'])
 			self.BSP['Rad'] = 10.0**(self.BSP['log(R)'])
 
+			# determine weighting to correct implict mass bias based on EEP sampling
+			self.BSP['EEPwgt'] = np.empty(len(self.BSP))
+			for agefeh_i in np.array(np.meshgrid(np.unique(self.EAF['log_age']),np.unique(self.EAF['[Fe/H]in']))).T.reshape(-1,2):
+				ind_i = np.argwhere((self.EAF['log_age'] == agefeh_i[0]) & (self.EAF['[Fe/H]in'] == agefeh_i[1])).flatten()
+				self.BSP['EEPwgt'][ind_i] = np.gradient(self.BSP['init_Mass'][ind_i])/np.sum(np.gradient(self.BSP['init_Mass'][ind_i]))
+			# fix the points where gradient = 0.0
+			mincond = np.array(self.BSP['EEPwgt'] == 0.0)
+			self.BSP['EEPwgt'][mincond] = np.unique(self.BSP['EEPwgt'])[1]
+
 			# Ysurf = 0.249 + ((0.2703-0.249)/0.0142)*self.BSP['Z_surf'] # from Asplund et al. 2009
 			# Xsurf = 1 - Ysurf - self.BSP['Z_surf']
 			# self.BSP['[Fe/H]'] = np.log10(self.BSP['Z_surf']/Xsurf) - np.log10(0.0199)
 			self.BSP['[Fe/H]'] = np.log10(self.BSP['Z_surf']/Xsurf) - np.log10(0.0181)
+			self.BSP['C12'] = C12surf
+			self.BSP['C13'] = C13surf
+			self.BSP['N14'] = N14surf
+			self.BSP['O16'] = O16surf
+
+			self.BSP['[C/M]'] = np.log10((C12surf+C13surf)/Xsurf) - np.log10(0.0181)
+			self.BSP['[N/M]'] = np.log10(N14surf/Xsurf) - np.log10(0.0181)
+			self.BSP['[O/M]'] = np.log10(O16surf/Xsurf) - np.log10(0.0181)
 
 		else:
 			print 'ONLY WORKS ON MIST'
@@ -74,7 +100,7 @@ class StarPar(object):
 			,axis=1)
 
 		# init the reddening class
-		RR = Redden()
+		RR = Redden(stripeindex=stripeindex)
 		self.red = RR.red
 
 		# define age/mass bounds for use later as uninformative priors
@@ -98,12 +124,14 @@ class StarPar(object):
 		self.dist = np.sqrt( (2.0**2.0) + (2.0**2.0) + (2.0**2.0) )
 
 
-	def __call__(self, bfpar,epar,priordict={},outfile='TEST.dat',sampler='emcee',p0mean=None,p0std=None,nwalkers=100,nthreads=0,nburnsteps=0,nsteps=100):
+	def __call__(self, bfpar,epar,priordict={},outfile='TEST.dat',restart=None,sampler='emcee',samplertype=None,nsamples=None,
+		p0mean=None,p0std=None,nwalkers=100,nthreads=0,nburnsteps=0,nsteps=100):
 		# write input into self
 		self.bfpar = bfpar
 		self.epar = epar
 		self.priordict = priordict
 		self.outfile = outfile
+		self.restart = restart
 
 		if sampler == 'emcee':
 			self.p0mean = p0mean
@@ -173,6 +201,7 @@ class StarPar(object):
 		for pp in self.outfilepars:
 			self.outff.write('{0} '.format(pp))
 		self.outff.write('logz logwt\n')
+		self.outff.flush()
 
 		# define some default priors based on grid limits,
 		# else use the user input priors
@@ -210,7 +239,7 @@ class StarPar(object):
 				self.Avran = 6.0 # set by Av grid
 				self.minAv = 0.0
 			else:
-				self.Avran = (self.priordict['Av'][1]-self.priordict['Av'][0])
+				self.Avran = (self.priordict['Av'][2]-self.priordict['Av'][0])
 				self.minAv = self.priordict['Av'][0]
 
 
@@ -220,16 +249,19 @@ class StarPar(object):
 		if sampler == 'emcee':
 			self.run_emcee()
 		elif sampler == 'nestle':
-			return self.run_nestle()
+			runout = self.run_nestle(samplertype=samplertype,npoints=nsamples,restart=restart)
+			# lastsamples = runout[0].
+			# close output file
+			self.outff.flush()
+			self.outff.close()
+			return runout
 		elif sampler == 'init':
 			return None
 		else:
 			print 'DID NOT UNDERSTAND WHICH SAMPLER TO USE!'
 			return None
 
-		# close output file
-		self.outff.close()
-
+	"""
 	def run_emcee(self):
 
 			# if photometry is being fit, add distance and reddening to p0
@@ -354,48 +386,118 @@ class StarPar(object):
 
 		return 0.0
 
-	def run_nestle(self,npoints=500):
-		# generate initial random sample within Nestle volume
-		modind = np.array(range(0,len(self.EAF)),dtype=int)
-		selind = modind[np.random.choice(len(modind),npoints,replace=False)]
-		
-		cond = (
-			(self.PHOT['V_T']+self.DM(self.mindist+0.5*self.distran) > self.bfpar['V_T']-1.0) & 
-			(self.PHOT['V_T']+self.DM(self.mindist+0.5*self.distran) < self.bfpar['V_T'] + 1.0) &
-			(self.PHOT['B_T']+self.DM(self.mindist+0.5*self.distran) > self.bfpar['B_T']-1.0) & 
-			(self.PHOT['B_T']+self.DM(self.mindist+0.5*self.distran) < self.bfpar['B_T'] + 1.0)
-			)
+	"""
+	def run_nestle(self,samplertype=None,npoints=None,restart=None):
+		if samplertype == None:
+			samplertype = 'multi'
+		if npoints == None:
+			npoints = 100
 
-		addind = modind[cond][np.random.choice(len(modind[cond]),int(npoints*0.25),replace=False)]
-		# cond = self.EAF['EEP'] <= 400
-		# modind = modind[cond]
+		if restart == None:
+			# generate initial random sample within Nestle volume
+			modind = np.array(range(0,len(self.EAF)),dtype=int)
+			selind = modind[np.random.choice(len(modind),npoints,replace=False)]
+			
+			if ('V_T' in self.bfpar.keys()) & ('B_T' in self.bfpar.keys()):
+				cond = (
+					(self.PHOT['V_T']+self.DM(self.mindist+0.5*self.distran) > self.bfpar['V_T']-1.0) & 
+					(self.PHOT['V_T']+self.DM(self.mindist+0.5*self.distran) < self.bfpar['V_T'] + 1.0) &
+					(self.PHOT['B_T']+self.DM(self.mindist+0.5*self.distran) > self.bfpar['B_T']-1.0) & 
+					(self.PHOT['B_T']+self.DM(self.mindist+0.5*self.distran) < self.bfpar['B_T'] + 1.0)
+					)
 
-		finind = np.hstack([selind,addind])
-		finind = np.unique(finind)
-		initsample = self.EAF[finind]
-		initsample_v = np.empty((len(initsample), self.ndim), dtype=np.float64)
-		initsample_u = np.empty((len(initsample), self.ndim), dtype=np.float64)
+				addind = modind[cond][np.random.choice(len(modind[cond]),int(npoints*0.25),replace=False)]
+				# cond = self.EAF['EEP'] <= 400
+				# modind = modind[cond]
+				finind = np.hstack([selind,addind])
+				finind = np.unique(finind)
+			else:
+				finind = selind
 
-		for i in range(len(initsample)):
-			initsample_v_i = [float(initsample['EEP'][i]),10.0**(float(initsample['log_age'][i])-9.0),float(initsample['[Fe/H]in'][i])]
-			if self.fitphotbool:
-				# initsample_v_i.append(self.distran*np.random.rand()+self.mindist)
-				# initsample_v_i.append(self.Avran*np.random.rand()+self.minAv)
-				distmean = 1000.0/self.priordict['Para'][0]
-				distsig = distmean-(1000.0/(self.priordict['Para'][0]-self.priordict['Para'][1]))
-				initsample_v_i.append(distsig*np.random.randn()+distmean)
-				initsample_v_i.append(self.Avran*np.random.rand()+self.minAv)
+			initsample = self.EAF[finind]
+			initsample_v = np.empty((len(initsample), self.ndim), dtype=np.float64)
+			initsample_u = np.empty((len(initsample), self.ndim), dtype=np.float64)
 
-			initsample_v[i,:] = initsample_v_i
-			initsample_u[i,:] = self.prior_inversetrans(initsample_v[i,:])
+			for i in range(len(initsample)):
+				initsample_v_i = [float(initsample['EEP'][i]),10.0**(float(initsample['log_age'][i])-9.0),float(initsample['[Fe/H]in'][i])]
+				if self.fitphotbool:
+					# initsample_v_i.append(self.distran*np.random.rand()+self.mindist)
+					# initsample_v_i.append(self.Avran*np.random.rand()+self.minAv)
+					if 'Para' in self.priordict.keys():
+						distmean = 1000.0/self.priordict['Para'][0]
+						parashift = self.priordict['Para'][0]-3.0*self.priordict['Para'][1]
+						distsig = (1000.0/parashift)-distmean
+						initsample_v_i.append(distsig*np.random.randn()+distmean)
+					else:
+						initsample_v_i.append(self.distran*np.random.rand()+self.mindist)
+					initsample_v_i.append(self.Avran*np.random.rand()+self.minAv)
+				initsample_u_i = self.prior_inversetrans(initsample_v_i)
 
-		print 'Start Nestle w/ {0} number of samples'.format(len(initsample))
+				# temp = self.prior_trans(initsample_u_i)
+
+				# for vv,uu,tt in zip(initsample_v_i,initsample_u_i,temp):
+				# 	print vv, uu, tt
+				# print ''
+
+
+				initsample_v[i,:] = initsample_v_i
+				initsample_u[i,:] = initsample_u_i
+
+		else:
+			restart_from = Table.read(restart,format='ascii')
+			if len(restart_from) > npoints:
+				restart_ind = np.random.choice(range(0,len(restart_from)),npoints,replace=False,p=np.exp(restart_from['logwt']-restart_from['logz'][-1]))
+				restart_sel = restart_from[restart_ind]
+				addind = np.random.choice(len(self.EAF),int(0.25*npoints),replace=False)
+				addsel = self.EAF[addind]
+			else:
+				restart_sel = restart_from
+				numbadd = 1.25*npoints-len(restart_sel)
+				addind = np.random.choice(len(self.EAF),numbadd,replace=False)
+				addsel = self.EAF[addind]
+
+
+			initsample_v = np.empty((len(restart_sel)+len(addsel),self.ndim), dtype=np.float64)
+			initsample_u = np.empty((len(restart_sel)+len(addsel),self.ndim), dtype=np.float64)
+
+			for i in range(len(restart_sel)):
+				initsample_v_i = [float(restart_sel['EEP'][i]),float(restart_sel['Age'][i]),float(restart_sel['[Fe/H]in'][i])]
+				if self.fitphotbool:
+					initsample_v_i.append(float(restart_sel['Dist'][i]))
+					initsample_v_i.append(float(restart_sel['Av'][i]))
+				initsample_u_i = self.prior_inversetrans(initsample_v_i)
+
+				initsample_v[i,:] = initsample_v_i
+				initsample_u[i,:] = initsample_u_i
+
+			for i in range(len(addsel)):
+				initsample_v_i = [float(addsel['EEP'][i]),10.0**(float(addsel['log_age'][i])-9.0),float(addsel['[Fe/H]in'][i])]
+				if self.fitphotbool:
+					# initsample_v_i.append(self.distran*np.random.rand()+self.mindist)
+					# initsample_v_i.append(self.Avran*np.random.rand()+self.minAv)
+					distmean = 1000.0/self.priordict['Para'][0]
+					parashift = self.priordict['Para'][0]-3.0*self.priordict['Para'][1]
+					distsig = (1000.0/parashift)-distmean
+					initsample_v_i.append(distsig*np.random.randn()+distmean)
+					initsample_v_i.append(self.Avran*np.random.rand()+self.minAv)
+				initsample_u_i = self.prior_inversetrans(initsample_v_i)
+
+				initsample_v[i+len(restart_sel),:] = initsample_v_i
+				initsample_u[i+len(restart_sel),:] = initsample_u_i
+
+
+		print 'Start Nestle w/ {0} number of samples'.format(len(initsample_v))
 		self.startmct = datetime.now()
+		self.stept = datetime.now()
+		self.ncallt = 0
+		self.maxcallnum = 0
+		sys.stdout.flush()
 		result = nestle.sample(
-			self.lnp_call_nestle,self.prior_trans,self.ndim,method='multi',
-			npoints=len(initsample),callback=self.nestle_callback,user_sample=initsample_u,
-			# update_interval=
-
+			self.lnp_call_nestle,self.prior_trans,self.ndim,method=samplertype,
+			npoints=len(initsample_v),callback=self.nestle_callback,user_sample=initsample_u,
+			# dlogz=1.0,
+			# update_interval=1,
+			# maxrejcall=len(initsample_v)+2,
 			)
 		p,cov = nestle.mean_and_cov(result.samples,result.weights)
 		return result,p,cov
@@ -420,26 +522,37 @@ class StarPar(object):
 		# write new line
 		self.outff.write('\n')
 
+		numbcalls_i = iterinfo['ncall'] - self.ncallt
+		self.maxcallnum = max([self.maxcallnum,numbcalls_i])
+
+		self.ncallt = iterinfo['ncall']
+
 		# print iteration number and evidence at specific iterations
-		if iterinfo['it'] % 500 == 0:
+		if iterinfo['it'] % 200 == 0:
 			if iterinfo['logz'] < -10E+6:
-				print 'Iter: {0} log(z) < -10M log(vol) = {1} Time: {2}'.format(iterinfo['it'],iterinfo['logvol'],datetime.now()-self.startmct)
+				print 'Iter: {0} log(z) < -10M, log(vol): {1:6.3f} Time: {2}, Tot Time: {3}, max#: {4}, Tot#: {5}'.format(
+					iterinfo['it'],iterinfo['logvol'],datetime.now()-self.stept,datetime.now()-self.startmct,
+					self.maxcallnum,iterinfo['ncall'])
 			else:
-				print 'Iter: {0} log(z) = {1} log(vol) = {2} Time: {3}'.format(iterinfo['it'],iterinfo['logz'],iterinfo['logvol'],datetime.now()-self.startmct)
-			self.startmct = datetime.now()
+				print 'Iter: {0} log(z): {1:6.3f}, log(vol): {2:6.3f} Time: {3}, Tot Time: {4}, max#: {5}, Tot#: {6}'.format(
+					iterinfo['it'],iterinfo['logz'],iterinfo['logvol'],datetime.now()-self.stept,datetime.now()-self.startmct,
+					self.maxcallnum,iterinfo['ncall'])
+			self.stept = datetime.now()
+			self.outff.flush()
+			sys.stdout.flush()
+			self.maxcallnum = 0
 
 	def prior_trans(self,par):
 		""" project the parameters onto the prior unit cube """	
 
 		if self.fitphotbool:
 			eep,age,feh,dist,Av = par
-			para = 1000.0/dist
 			return np.array([
 				self.eepran*eep+self.mineep,
 				self.ageran*age+self.minage,
 				self.fehran*feh+self.minfeh,
-				self.priordict['Para'][0]+np.sqrt(2.0)*self.priordict['Para'][1]*erfinv(2.0*para-1.0),
-				# self.distran*dist+self.mindist,
+				self.distran*dist+self.mindist,
+				# self.priordict['Para'][0]+np.sqrt(2.0)*(self.priordict['Para'][1]/(self.priordict['Para'][0]**2.0))*erfinv(2.0*dist-1.0),
 				self.Avran*Av+self.minAv
 				])
 
@@ -455,13 +568,12 @@ class StarPar(object):
 		""" de-project values on the prior unit cube to parameter space """
 		if self.fitphotbool:
 			eep,age,feh,dist,Av = par
-			para = 1000.0/dist
 			return np.array([
 				(eep-self.mineep)/self.eepran,
 				(age-self.minage)/self.ageran,
 				(feh-self.minfeh)/self.fehran,
-				# (dist-self.mindist)/self.distran,
-				1.0/(np.sqrt(2.0*np.pi)*self.priordict['Para'][1])*np.exp(-0.5*((para-self.priordict['Para'][0])/self.priordict['Para'][1])**2.0),
+				(dist-self.mindist)/self.distran,
+				# 1.0/(np.sqrt(2.0*np.pi)*self.priordict['Para'][1])*np.exp(-0.5*(((dist-self.priordict['Para'][0])/self.priordict['Para'][1])**2.0)),
 				(Av-self.minAv)/self.Avran
 				])
 
@@ -480,8 +592,8 @@ class StarPar(object):
 		self.moddict = self.modcall(par)
 		if self.moddict == "ValueError":
 			return np.nan_to_num(-np.inf)
-		# lnprior = self.logprior(self.moddict)
-		lnprior = 0.0
+		lnprior = self.logprior(self.moddict)
+		# lnprior = 0.0
 		lnlike = self.loglhood(self.moddict)
 		return lnprior+lnlike
 
@@ -611,11 +723,20 @@ class StarPar(object):
 				else:
 					resid2 = 0.5*((moddict[kk]-self.priordict[kk][0])**2.0)/(self.priordict[kk][1]**2.0)
 					lnprior = lnprior + resid2 - np.log(np.sqrt(2.0*np.pi)*self.priordict[kk][1])
+			if kk == 'Dist':
+				lnprior = lnprior + 2.0*np.log(moddict['Dist']) - (moddict['Dist']/175.0)
+			if kk == 'Av':
+				if moddict['Av'] <= self.priordict['Av'][1]:
+					pass
+				else:
+					lnprior = lnprior - ((moddict['Av'] - self.priordict['Av'][1])/self.priordict['Av'][1])
+
 		return lnprior
 
 	def loglhood(self,moddict):
 		deltadict = {}
-		dist = moddict['Dist']
+		if 'Dist' in moddict.keys():
+			dist = moddict['Dist']
 
 		for kk in self.bfpar.keys():
 			if kk in self.modphotbands:
@@ -627,16 +748,23 @@ class StarPar(object):
 			else:
 				deltadict[kk] = (moddict[kk]-self.bfpar[kk])/self.epar[kk]
 		chisq = np.sum([deltadict[kk]**2.0 for kk in self.bfpar.keys()])
-		return -0.5 * chisq
+		return -0.5 * chisq + np.log(moddict['EEPwgt'])
 
 	def DM(self,distance):
 		#distance in parsecs
 		return 5.0*np.log10(distance)-5.0
 
 class Redden(object):
-	def __init__(self):
-		BC = Table(np.array(h5py.File('/Users/Phill/Astro/MIST/MIST_full.h5','r')['BC']))
-		BC_AV0 = BC[BC['Av'] == 0.0]
+	def __init__(self,stripeindex=None):
+		BC = Table(np.array(h5py.File('/Users/pcargile/Astro/SteEvoMod/MIST_full.h5','r')['BC']))
+ 		# if stripeindex == None:
+ 		# 	BCfile = '/n/regal/conroy_lab/pac/MISTFILES/MIST_full_1.h5'
+ 		# else:
+ 		# 	BCfile = '/n/regal/conroy_lab/pac/MISTFILES/MIST_full_{0}.h5'.format(stripeindex)
+ 		# BC = Table(np.array(h5py.File(BCfile,'r')['BC']))
+
+ 		BC_AV0 = BC[BC['Av'] == 0.0]
+
 		self.bands = BC.keys()
 		[self.bands.remove(x) for x in ['Teff', 'logg', '[Fe/H]', 'Av', 'Rv']]
 
