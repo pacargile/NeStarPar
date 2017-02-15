@@ -23,11 +23,11 @@ class StarPar(object):
 
 		if model == 'MIST':
 			# read in MIST models
-			MISTFILE = '/Users/pcargile/Astro/SteEvoMod/MIST_full.h5'
-			# if stripeindex == None:
-			# 	MISTFILE = '/n/regal/conroy_lab/pac/MISTFILES/MIST_full_1.h5'
-			# else:
-			# 	MISTFILE = '/n/regal/conroy_lab/pac/MISTFILES/MIST_full_{0}.h5'.format(stripeindex)
+			# MISTFILE = '/Users/pcargile/Astro/SteEvoMod/MIST_full.h5'
+			if stripeindex == None:
+				MISTFILE = '/n/regal/conroy_lab/pac/MISTFILES/MIST_full_1.h5'
+			else:
+				MISTFILE = '/n/regal/conroy_lab/pac/MISTFILES/MIST_full_{0}.h5'.format(stripeindex)
 			print 'USING MODEL: ', MISTFILE
 			EAF_i = Table(np.array(h5py.File(MISTFILE,'r')['EAF']))
 			BSP_i = Table(np.array(h5py.File(MISTFILE,'r')['BSP']))
@@ -46,6 +46,8 @@ class StarPar(object):
 			C13surf = self.ALLSP['surface_c13'].copy()
 			N14surf   = self.ALLSP['surface_n14'].copy()
 			O16surf   = self.ALLSP['surface_o16'].copy()
+			self.BSP['delta_nu'] = self.ALLSP['delta_nu']
+			self.BSP['nu_max'] = self.ALLSP['nu_max']
 			self.BSP['init_Mass'] = self.ALLSP['initial_mass']
 			del(self.ALLSP)
 
@@ -124,8 +126,8 @@ class StarPar(object):
 		self.dist = np.sqrt( (2.0**2.0) + (2.0**2.0) + (2.0**2.0) )
 
 
-	def __call__(self, bfpar,epar,priordict={},outfile='TEST.dat',restart=None,sampler='emcee',samplertype=None,nsamples=None,
-		p0mean=None,p0std=None,nwalkers=100,nthreads=0,nburnsteps=0,nsteps=100):
+	def __call__(self, bfpar,epar,priordict={},outfile='TEST.dat',restart=None,sampler='nestle',samplertype=None,nsamples=None,
+		p0mean=None,p0std=None,nwalkers=100,nthreads=0,nburnsteps=0,nsteps=100,maxrejcall=None,weightrestart=True):
 		# write input into self
 		self.bfpar = bfpar
 		self.epar = epar
@@ -235,7 +237,7 @@ class StarPar(object):
 				self.distran = (self.priordict['Dist'][1]-self.priordict['Dist'][0])
 				self.mindist = self.priordict['Dist'][0]
 
-			if 'Av' not in self.priordict.keys():
+			if ('Av' not in self.priordict.keys()) or (self.priordict['Av'][-1] == 'G'):
 				self.Avran = 6.0 # set by Av grid
 				self.minAv = 0.0
 			else:
@@ -249,7 +251,7 @@ class StarPar(object):
 		if sampler == 'emcee':
 			self.run_emcee()
 		elif sampler == 'nestle':
-			runout = self.run_nestle(samplertype=samplertype,npoints=nsamples,restart=restart)
+			runout = self.run_nestle(samplertype=samplertype,npoints=nsamples,restart=restart,maxrejcall=maxrejcall,weightrestart=weightrestart)
 			# lastsamples = runout[0].
 			# close output file
 			self.outff.flush()
@@ -387,7 +389,7 @@ class StarPar(object):
 		return 0.0
 
 	"""
-	def run_nestle(self,samplertype=None,npoints=None,restart=None):
+	def run_nestle(self,samplertype=None,npoints=None,restart=None,weightrestart=True,maxrejcall=None):
 		if samplertype == None:
 			samplertype = 'multi'
 		if npoints == None:
@@ -446,7 +448,10 @@ class StarPar(object):
 		else:
 			restart_from = Table.read(restart,format='ascii')
 			if len(restart_from) > npoints:
-				restart_ind = np.random.choice(range(0,len(restart_from)),npoints,replace=False,p=np.exp(restart_from['logwt']-restart_from['logz'][-1]))
+				if weightrestart:
+					restart_ind = np.random.choice(range(0,len(restart_from)),npoints,replace=False,p=np.exp(restart_from['logwt']-restart_from['logz'][-1]))					
+				else:
+					restart_ind = np.random.choice(range(0,len(restart_from)),npoints,replace=False)					
 				restart_sel = restart_from[restart_ind]
 				addind = np.random.choice(len(self.EAF),int(0.25*npoints),replace=False)
 				addsel = self.EAF[addind]
@@ -455,6 +460,7 @@ class StarPar(object):
 				numbadd = 1.25*npoints-len(restart_sel)
 				addind = np.random.choice(len(self.EAF),numbadd,replace=False)
 				addsel = self.EAF[addind]
+
 
 
 			initsample_v = np.empty((len(restart_sel)+len(addsel),self.ndim), dtype=np.float64)
@@ -497,7 +503,7 @@ class StarPar(object):
 			npoints=len(initsample_v),callback=self.nestle_callback,user_sample=initsample_u,
 			# dlogz=1.0,
 			# update_interval=1,
-			# maxrejcall=len(initsample_v)+2,
+			maxrejcall=maxrejcall,
 			)
 		p,cov = nestle.mean_and_cov(result.samples,result.weights)
 		return result,p,cov
@@ -721,15 +727,19 @@ class StarPar(object):
 					else:
 						pass
 				else:
-					resid2 = 0.5*((moddict[kk]-self.priordict[kk][0])**2.0)/(self.priordict[kk][1]**2.0)
-					lnprior = lnprior + resid2 - np.log(np.sqrt(2.0*np.pi)*self.priordict[kk][1])
+					resid2 = -0.5*((moddict[kk]-self.priordict[kk][0])**2.0)/(self.priordict[kk][1]**2.0)
+					lnprior = lnprior - np.log(np.sqrt(2.0*np.pi)*self.priordict[kk][1]) + resid2
 			if kk == 'Dist':
 				lnprior = lnprior + 2.0*np.log(moddict['Dist']) - (moddict['Dist']/175.0)
-			if kk == 'Av':
-				if moddict['Av'] <= self.priordict['Av'][1]:
-					pass
+			if (kk == 'Av'):
+				if self.priordict['Av'][-1] != 'G':
+					if moddict['Av'] <= self.priordict['Av'][1]:
+						pass
+					else:
+						lnprior = lnprior - ((moddict['Av'] - self.priordict['Av'][1])/self.priordict['Av'][1])
 				else:
-					lnprior = lnprior - ((moddict['Av'] - self.priordict['Av'][1])/self.priordict['Av'][1])
+					resid2 = -0.5*((moddict[kk]-self.priordict['Av'][0])**2.0)/(self.priordict['Av'][1]**2.0)
+					lnprior = lnprior - np.log(np.sqrt(2.0*np.pi)*self.priordict['Av'][1]) + resid2
 
 		return lnprior
 
@@ -756,12 +766,12 @@ class StarPar(object):
 
 class Redden(object):
 	def __init__(self,stripeindex=None):
-		BC = Table(np.array(h5py.File('/Users/pcargile/Astro/SteEvoMod/MIST_full.h5','r')['BC']))
- 		# if stripeindex == None:
- 		# 	BCfile = '/n/regal/conroy_lab/pac/MISTFILES/MIST_full_1.h5'
- 		# else:
- 		# 	BCfile = '/n/regal/conroy_lab/pac/MISTFILES/MIST_full_{0}.h5'.format(stripeindex)
- 		# BC = Table(np.array(h5py.File(BCfile,'r')['BC']))
+		# BC = Table(np.array(h5py.File('/Users/pcargile/Astro/SteEvoMod/MIST_full.h5','r')['BC']))
+ 		if stripeindex == None:
+ 			BCfile = '/n/regal/conroy_lab/pac/MISTFILES/MIST_full_1.h5'
+ 		else:
+ 			BCfile = '/n/regal/conroy_lab/pac/MISTFILES/MIST_full_{0}.h5'.format(stripeindex)
+ 		BC = Table(np.array(h5py.File(BCfile,'r')['BC']))
 
  		BC_AV0 = BC[BC['Av'] == 0.0]
 
