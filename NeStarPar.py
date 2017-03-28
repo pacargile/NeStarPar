@@ -3,14 +3,17 @@ import emcee
 import numpy as np
 import sys,time,datetime, math,re
 from datetime import datetime
-from scipy.interpolate import LinearNDInterpolator,NearestNDInterpolator
+from scipy.interpolate import LinearNDInterpolator
 from scipy.spatial import cKDTree
 from scipy.special import erfinv
-from astropy.table import Table
+from astropy.table import Table,hstack
 import numpy as np
 import h5py
 from matplotlib import cm
 import warnings
+
+MISTFILE_default = '/Users/pcargile/Astro/MIST/MIST_v1.0/MIST_full.h5'
+# MISTFILE_default =  '/n/regal/conroy_lab/pac/MISTFILES/MIST_full_1.h5'
 
 class StarPar(object):
 	"""
@@ -22,84 +25,78 @@ class StarPar(object):
 			model = 'MIST'
 
 		if model == 'MIST':
-			# read in MIST models
-			# MISTFILE = '/Users/pcargile/Astro/SteEvoMod/MIST_full.h5'
 			if stripeindex == None:
-				MISTFILE = '/n/regal/conroy_lab/pac/MISTFILES/MIST_full_1.h5'
+				MISTFILE = MISTFILE_default
 			else:
 				MISTFILE = '/n/regal/conroy_lab/pac/MISTFILES/MIST_full_{0}.h5'.format(stripeindex)
-			print 'USING MODEL: ', MISTFILE
-			EAF_i = Table(np.array(h5py.File(MISTFILE,'r')['EAF']))
-			BSP_i = Table(np.array(h5py.File(MISTFILE,'r')['BSP']))
-			PHOT_i = Table(np.array(h5py.File(MISTFILE,'r')['PHOT']))
-			ALLSP_i = Table(np.array(h5py.File(MISTFILE,'r')['All_SP']))
+			print('USING MODEL: {0}'.format(MISTFILE))
+			self.MISTh5 = h5py.File(MISTFILE,'r')
+			MODPARS_i  = Table(np.array(self.MISTh5['MODPARS']))
+			STARPARS_i = Table(np.array(self.MISTh5['STARPARS']))
 
-			# parse MIST models to only include up to end of helium burning (TACHeB), only to ages < 16 Gyr, and 
+			# EAF_i = Table(np.array(h5py.File(MISTFILE,'r')['EAF']))
+			# BSP_i = Table(np.array(h5py.File(MISTFILE,'r')['BSP']))
+			# PHOT_i = Table(np.array(h5py.File(MISTFILE,'r')['PHOT']))
+			# ALLSP_i = Table(np.array(h5py.File(MISTFILE,'r')['All_SP']))
+
+			# parse MIST models to only include up to end of helium burning (TACHeB), only to ages < 17 Gyr, and 
 			# stellar masses < 50 Msol (EEP < 707)
-			cond = (EAF_i['EEP'] <= 707) & (EAF_i['log_age'] <= np.log10(17.0*10.0**9.0)) & (BSP_i['star_mass'] < 30.0)
-			self.EAF = EAF_i[cond]
-			self.BSP = BSP_i[cond]
-			self.PHOT = PHOT_i[cond]
-			self.ALLSP = ALLSP_i[cond]
-			Xsurf = self.ALLSP['surface_h1'].copy()
-			C12surf = self.ALLSP['surface_c12'].copy()
-			C13surf = self.ALLSP['surface_c13'].copy()
-			N14surf   = self.ALLSP['surface_n14'].copy()
-			O16surf   = self.ALLSP['surface_o16'].copy()
-			self.BSP['delta_nu'] = self.ALLSP['delta_nu']
-			self.BSP['nu_max'] = self.ALLSP['nu_max']
-			self.BSP['init_Mass'] = self.ALLSP['initial_mass']
-			del(self.ALLSP)
+			self.MASTERcond = (MODPARS_i['EEP'] <= 707) & (MODPARS_i['log_age'] <= np.log10(17.0*10.0**9.0)) & (STARPARS_i['initial_mass'] < 50.0)
+
+			self.MODPARS = MODPARS_i[self.MASTERcond]
+			self.STARPARS = STARPARS_i[self.MASTERcond]
+
+			# self.EAF = EAF_i[cond]
+			# self.BSP = BSP_i[cond]
+			# self.PHOT = PHOT_i[cond]
+			# self.ALLSP = ALLSP_i[cond]
+			# self.BSP['delta_nu'] = self.ALLSP['delta_nu']
+			# self.BSP['nu_max'] = self.ALLSP['nu_max']
+			# self.BSP['init_Mass'] = self.ALLSP['initial_mass']
+			# del(self.ALLSP)
 
 			# define the available photometric filters
-			self.modphotbands = self.PHOT.keys()
+			self.modphotbands = []
+			for kk in self.MISTh5.attrs.keys():
+				for fit_i in self.MISTh5.attrs[kk]:
+					self.modphotbands.append(fit_i)
 
 			# rename stuff for clarity
-			self.EAF['initial_[Fe/H]'].name = '[Fe/H]in'
-			self.BSP['log_L'].name = 'log(L)'
-			self.BSP['log_Teff'].name = 'log(Teff)'
-			self.BSP['log_R'].name = 'log(R)'
-			self.BSP['star_mass'].name = 'Mass'
-			self.BSP['log_g'].name = 'log(g)'
-			self.BSP['log_surf_z'].name = 'log(Z_surf)'
-
-			self.BSP['Z_surf'] = 10.0**(self.BSP['log(Z_surf)'])
-			self.BSP['Teff'] = 10.0**(self.BSP['log(Teff)'])
-			self.BSP['Rad'] = 10.0**(self.BSP['log(R)'])
+			self.MODPARS['initial_[Fe/H]'].name = '[Fe/H]in'
+			self.STARPARS['initial_mass'].name = 'init_Mass'
+			self.STARPARS['log_L'].name = 'log(L)'
+			self.STARPARS['log_Teff'].name = 'log(Teff)'
+			self.STARPARS['log_R'].name = 'log(R)'
+			self.STARPARS['star_mass'].name = 'Mass'
+			self.STARPARS['log_g'].name = 'log(g)'
+			self.STARPARS['log_surf_z'].name = 'log(Z_surf)'
+			self.STARPARS['Z_surf'] = 10.0**(self.STARPARS['log(Z_surf)'])
+			self.STARPARS['Teff'] = 10.0**(self.STARPARS['log(Teff)'])
+			self.STARPARS['Rad'] = 10.0**(self.STARPARS['log(R)'])
+			self.STARPARS['[Fe/H]'] = np.log10(self.STARPARS['Z_surf']/self.STARPARS['surface_h1']) - np.log10(0.0181)
 
 			# determine weighting to correct implict mass bias based on EEP sampling
-			self.BSP['EEPwgt'] = np.empty(len(self.BSP))
-			for agefeh_i in np.array(np.meshgrid(np.unique(self.EAF['log_age']),np.unique(self.EAF['[Fe/H]in']))).T.reshape(-1,2):
-				ind_i = np.argwhere((self.EAF['log_age'] == agefeh_i[0]) & (self.EAF['[Fe/H]in'] == agefeh_i[1])).flatten()
-				self.BSP['EEPwgt'][ind_i] = np.gradient(self.BSP['init_Mass'][ind_i])/np.sum(np.gradient(self.BSP['init_Mass'][ind_i]))
+			self.STARPARS['EEPwgt'] = np.empty(len(self.STARPARS))
+			for agefeh_i in np.array(np.meshgrid(np.unique(self.MODPARS['log_age']),np.unique(self.MODPARS['[Fe/H]in']))).T.reshape(-1,2):
+				ind_i = np.argwhere((self.MODPARS['log_age'] == agefeh_i[0]) & (self.MODPARS['[Fe/H]in'] == agefeh_i[1])).flatten()
+				self.STARPARS['EEPwgt'][ind_i] = np.gradient(self.STARPARS['init_Mass'][ind_i])/np.sum(np.gradient(self.STARPARS['init_Mass'][ind_i]))
 			# fix the points where gradient = 0.0
-			mincond = np.array(self.BSP['EEPwgt'] == 0.0)
-			self.BSP['EEPwgt'][mincond] = np.unique(self.BSP['EEPwgt'])[1]
+			mincond = np.array(self.STARPARS['EEPwgt'] == 0.0)
+			self.STARPARS['EEPwgt'][mincond] = np.unique(self.STARPARS['EEPwgt'])[1]
+
+			# define an array with default stellar properties you want to output posteriors for
+			self.defaultstarpars = ['Mass','Rad','log(L)','Teff','log(g)','[Fe/H]','init_Mass','EEPwgt']
 
 			# Ysurf = 0.249 + ((0.2703-0.249)/0.0142)*self.BSP['Z_surf'] # from Asplund et al. 2009
 			# Xsurf = 1 - Ysurf - self.BSP['Z_surf']
 			# self.BSP['[Fe/H]'] = np.log10(self.BSP['Z_surf']/Xsurf) - np.log10(0.0199)
-			self.BSP['[Fe/H]'] = np.log10(self.BSP['Z_surf']/Xsurf) - np.log10(0.0181)
-			self.BSP['C12'] = C12surf
-			self.BSP['C13'] = C13surf
-			self.BSP['N14'] = N14surf
-			self.BSP['O16'] = O16surf
-
-			self.BSP['[C/M]'] = np.log10((C12surf+C13surf)/Xsurf) - np.log10(0.0181)
-			self.BSP['[N/M]'] = np.log10(N14surf/Xsurf) - np.log10(0.0181)
-			self.BSP['[O/M]'] = np.log10(O16surf/Xsurf) - np.log10(0.0181)
+			# self.BSP['[C/M]'] = np.log10((C12surf+C13surf)/Xsurf) - np.log10(0.0181)
+			# self.BSP['[N/M]'] = np.log10(N14surf/Xsurf) - np.log10(0.0181)
+			# self.BSP['[O/M]'] = np.log10(O16surf/Xsurf) - np.log10(0.0181)
 
 		else:
 			print 'ONLY WORKS ON MIST'
 			exit()
-
-		# create parnames
-		self.parnames = self.BSP.keys()+self.PHOT.keys()
-
-		# create a stacked values array
-		self.valuestack = np.stack(
-			[self.BSP[par] for par in self.BSP.keys()]+[self.PHOT[par] for par in self.PHOT.keys()]
-			,axis=1)
 
 		# init the reddening class
 		RR = Redden(stripeindex=stripeindex)
@@ -107,18 +104,18 @@ class StarPar(object):
 
 		# define age/mass bounds for use later as uninformative priors
 		self.minmax = {}
-		self.minmax['EEP'] = [self.EAF['EEP'].min(),self.EAF['EEP'].max()]
-		self.minmax['AGE'] = [self.EAF['log_age'].min(),self.EAF['log_age'].max()]
-		self.minmax['FEH'] = [self.EAF['[Fe/H]in'].min(),self.EAF['[Fe/H]in'].max()]
+		self.minmax['EEP'] = [self.MODPARS['EEP'].min()     ,self.MODPARS['EEP'].max()]
+		self.minmax['AGE'] = [self.MODPARS['log_age'].min() ,self.MODPARS['log_age'].max()]
+		self.minmax['FEH'] = [self.MODPARS['[Fe/H]in'].min(),self.MODPARS['[Fe/H]in'].max()]
 
 		self.ss = {}
 		print 'Growing the KD-Tree...'
 		self.eep_scale = 1.0
 		self.age_scale = 0.05
 		self.feh_scale = 0.25
-		self.eep_n = self.EAF['EEP']*(1.0/self.eep_scale) 
-		self.age_n = self.EAF['log_age']*(1.0/self.age_scale) 
-		self.feh_n = self.EAF['[Fe/H]in']*(1.0/self.feh_scale) 
+		self.eep_n = self.MODPARS['EEP']*(1.0/self.eep_scale) 
+		self.age_n = self.MODPARS['log_age']*(1.0/self.age_scale) 
+		self.feh_n = self.MODPARS['[Fe/H]in']*(1.0/self.feh_scale) 
 		self.pts_n = zip(self.eep_n,self.age_n,self.feh_n)
 
 		self.tree = cKDTree(self.pts_n)
@@ -143,20 +140,32 @@ class StarPar(object):
 			self.nburnsteps = nburnsteps
 			self.nsteps = nsteps
 
-		# number of dim, standard is 3 EEP, log(age), [Fe/H]in
-		self.ndim = 3
+		# create parnames, use set to filter out duplicates
+		parnames_i = list(set([x for x in self.bfpar.keys() if x in self.STARPARS.keys()]+self.defaultstarpars))
 
-		# see if photometry is being fit
-		self.fitphotbool = False
-		self.fitdistorpara = False
-		for kk in self.bfpar.keys():
-			if kk in self.modphotbands:
-				self.fitphotbool = True
-				self.ndim = 5					
-				break
+		# pull photometry that is being included in inference
+		self.PHOT = Table()
+		for bfkk in bfpar.keys():
+			for filtersets in self.MISTh5.attrs.keys():
+				if bfkk in self.MISTh5.attrs[filtersets]:
+					self.PHOT[bfkk] = np.array(self.MISTh5[filtersets])[bfkk]
 
-		# see if distance is being fit, only set if photometry is given
-		if self.fitphotbool:
+		if len(self.PHOT) > 0:
+
+			# apply MASTERcond so that PHOT matches up with MODPARS and STARPARS
+			self.PHOT = self.PHOT[self.MASTERcond]
+
+			# create a stacked values array
+			self.valuestack = np.stack(
+				[self.STARPARS[par] for par in parnames_i]+[self.PHOT[par] for par in self.PHOT.keys()]
+				,axis=1)
+			self.parnames = parnames_i+self.PHOT.keys()
+
+			self.fitphotbool = True
+			self.ndim = 5
+
+			# see if distance is being fit, only set if photometry is given
+			self.fitdistorpara = False
 			for kk in self.bfpar.keys():
 				if kk in ['Distance','distance','dist','Dist']:
 					print 'FITTING DISTANCE'
@@ -172,6 +181,15 @@ class StarPar(object):
 					break
 				else:
 					pass
+		else:
+			# number of dim, standard is 3 EEP, log(age), [Fe/H]in
+			self.ndim = 3
+
+			# create a stacked values array
+			self.valuestack = np.stack(
+				[self.STARPARS[par] for par in parnames_i]
+				,axis=1)
+			self.parnames = parnames_i
 
 		# remove dist or para from outfilepars
 		self.outfilepars = self.bfpar.keys()
@@ -397,26 +415,24 @@ class StarPar(object):
 
 		if restart == None:
 			# generate initial random sample within Nestle volume
-			modind = np.array(range(0,len(self.EAF)),dtype=int)
+			modind = np.array(range(0,len(self.MODPARS)),dtype=int)
 			selind = modind[np.random.choice(len(modind),npoints,replace=False)]
 			
-			if ('V_T' in self.bfpar.keys()) & ('B_T' in self.bfpar.keys()):
+			if ('Tycho_V' in self.bfpar.keys()) & ('Tycho_B' in self.bfpar.keys()):
 				cond = (
-					(self.PHOT['V_T']+self.DM(self.mindist+0.5*self.distran) > self.bfpar['V_T']-1.0) & 
-					(self.PHOT['V_T']+self.DM(self.mindist+0.5*self.distran) < self.bfpar['V_T'] + 1.0) &
-					(self.PHOT['B_T']+self.DM(self.mindist+0.5*self.distran) > self.bfpar['B_T']-1.0) & 
-					(self.PHOT['B_T']+self.DM(self.mindist+0.5*self.distran) < self.bfpar['B_T'] + 1.0)
+					(self.PHOT['Tycho_V']+self.DM(self.mindist+0.5*self.distran) > self.bfpar['Tycho_V']-1.0) & 
+					(self.PHOT['Tycho_V']+self.DM(self.mindist+0.5*self.distran) < self.bfpar['Tycho_V'] + 1.0) &
+					(self.PHOT['Tycho_B']+self.DM(self.mindist+0.5*self.distran) > self.bfpar['Tycho_B']-1.0) & 
+					(self.PHOT['Tycho_B']+self.DM(self.mindist+0.5*self.distran) < self.bfpar['Tycho_B'] + 1.0)
 					)
 
 				addind = modind[cond][np.random.choice(len(modind[cond]),int(npoints*0.25),replace=False)]
-				# cond = self.EAF['EEP'] <= 400
-				# modind = modind[cond]
 				finind = np.hstack([selind,addind])
 				finind = np.unique(finind)
 			else:
 				finind = selind
 
-			initsample = self.EAF[finind]
+			initsample = self.MODPARS[finind]
 			initsample_v = np.empty((len(initsample), self.ndim), dtype=np.float64)
 			initsample_u = np.empty((len(initsample), self.ndim), dtype=np.float64)
 
@@ -435,13 +451,6 @@ class StarPar(object):
 					initsample_v_i.append(self.Avran*np.random.rand()+self.minAv)
 				initsample_u_i = self.prior_inversetrans(initsample_v_i)
 
-				# temp = self.prior_trans(initsample_u_i)
-
-				# for vv,uu,tt in zip(initsample_v_i,initsample_u_i,temp):
-				# 	print vv, uu, tt
-				# print ''
-
-
 				initsample_v[i,:] = initsample_v_i
 				initsample_u[i,:] = initsample_u_i
 
@@ -453,15 +462,13 @@ class StarPar(object):
 				else:
 					restart_ind = np.random.choice(range(0,len(restart_from)),npoints,replace=False)					
 				restart_sel = restart_from[restart_ind]
-				addind = np.random.choice(len(self.EAF),int(0.25*npoints),replace=False)
-				addsel = self.EAF[addind]
+				addind = np.random.choice(len(self.MODPARS),int(0.25*npoints),replace=False)
+				addsel = self.MODPARS[addind]
 			else:
 				restart_sel = restart_from
 				numbadd = 1.25*npoints-len(restart_sel)
-				addind = np.random.choice(len(self.EAF),numbadd,replace=False)
-				addsel = self.EAF[addind]
-
-
+				addind = np.random.choice(len(self.MODPARS),numbadd,replace=False)
+				addsel = self.MODPARS[addind]
 
 			initsample_v = np.empty((len(restart_sel)+len(addsel),self.ndim), dtype=np.float64)
 			initsample_u = np.empty((len(restart_sel)+len(addsel),self.ndim), dtype=np.float64)
@@ -668,7 +675,7 @@ class StarPar(object):
 
 		# run tree query, check to make sure you get enough points in each dimension
 		ind = self.tree.query_ball_point([new_e,new_a,new_m],self.dist,p=5)
-		EAF_i = self.EAF[ind]
+		EAF_i = self.MODPARS[ind]
 
 		# check each dimension to make sure it has at least two values to interpolate over
 		for testkk in ['EEP','log_age','[Fe/H]in']:
@@ -766,12 +773,23 @@ class StarPar(object):
 
 class Redden(object):
 	def __init__(self,stripeindex=None):
-		# BC = Table(np.array(h5py.File('/Users/pcargile/Astro/SteEvoMod/MIST_full.h5','r')['BC']))
  		if stripeindex == None:
- 			BCfile = '/n/regal/conroy_lab/pac/MISTFILES/MIST_full_1.h5'
+ 			BCfile = MISTFILE_default
  		else:
  			BCfile = '/n/regal/conroy_lab/pac/MISTFILES/MIST_full_{0}.h5'.format(stripeindex)
- 		BC = Table(np.array(h5py.File(BCfile,'r')['BC']))
+
+ 		# read in MIST hdf5 table
+ 		MISTh5 = h5py.File(BCfile,'r')
+ 		# determine the BC datasets
+ 		BCTableList = [x for x in MISTh5.keys() if x[:3] == 'BC_']
+ 		# read in each BC dataset and pull the photometric information
+ 		for BCT in BCTableList:
+	 		BCTABLE = Table(np.array(MISTh5[BCT]))
+			if BCT == BCTableList[0]:
+				BC = BCTABLE.copy()
+			else:
+				BCTABLE.remove_columns(['Teff', 'logg', '[Fe/H]', 'Av', 'Rv'])
+				BC = hstack([BC,BCTABLE])
 
  		BC_AV0 = BC[BC['Av'] == 0.0]
 
@@ -789,7 +807,7 @@ class Redden(object):
 			rescale=True
 			)
 
-	def red(self,Teff=5770.0,logg=4.44,FeH=0.0,band='V',Av=0.0):
+	def red(self,Teff=5770.0,logg=4.44,FeH=0.0,band='Bessell_V',Av=0.0):
 
 		if (Teff > 500000.0):
 			Teff = 500000.0
@@ -810,74 +828,9 @@ class Redden(object):
 		interi = self.redintr(Teff,logg,FeH,Av)
 
 		bandsel = np.array([True if x == band else False for x in self.bands],dtype=bool)
-		vsel = np.array([True if x == 'V' else False for x in self.bands],dtype=bool)
+		vsel = np.array([True if x == 'Bessell_V' else False for x in self.bands],dtype=bool)
 		A_V = interi[vsel]-inter0[vsel]
 		A_X = interi[bandsel]-inter0[bandsel]
 		return (A_X/A_V)*Av
 
 
-
-if __name__ == '__main__':
-
-	# initialize StarPar class
-	STARPAR = StarPar()
-		
-	print '-------------------------------'
-	print ' Doing: Test                   '
-	print ' alpha Cen A w/ astroseis pars '
-	print ' Lit. Results say:             '
-	print ' Mass = 1.105+-0.007 Msol        '
-	print ' Age = 6.52+-0.3 Gyr            '
-	print ' Radius = 1.224+-0.003 Rsol   '
-	print '-------------------------------'
-	# test case
-	bfpar = {}
-	bfpar['Teff'] = 5810.0
-	bfpar['log(g)'] = 4.307
-	bfpar['[Fe/H]'] = 0.22
-	bfpar['parallax'] = 747.23
-	bfpar['V'] = -0.01
-	bfpar['B'] = 0.70
-	bfpar['U'] = 0.94
-
-	epar = {}
-	epar['Teff'] = 50.0
-	epar['log(g)'] = 0.005
-	epar['[Fe/H]'] = 0.05
-	epar['parallax'] = 1.17
-	epar['V'] = 0.01
-	epar['B'] = 0.01
-	epar['U'] = 0.01
-
-	# define any priors with dictionary
-	priordict = {}
-	priordict['Age'] = [1.0,15.0]
-	priordict['Mass'] = [0.25,3.0]
-	priordict['Rad'] = [0.1,3.0]
-
-	# name output file
-	outname = 'alphaCenA_test.dat'
-
-	# Now, set up and run the sampler:
-
-	results,p,cov = STARPAR(bfpar,epar,outname=outname,sampler='nestle')
-
-	print results.summary()
-	for ii,pp in enumerate(p):
-		print pp, np.sqrt(cov[ii,ii])
-
-
-	# # fullrun BI-> 100, Nsteps -> 400, nwalkers = 200, threads=4
-	# nwalkers = 50
-	# nthreads = 0 # multithreading not turned on yet, still dealing with pickling error
-	# nburnsteps = 0
-	# nsteps = 200
-
-	# # Make an initial guess for the positions - uniformly
-	# p0mean = np.array([352,5.0,0.0])
-	# p0std  = np.array([20.0,1.0,0.1])
-
-	# # Run MCMC
-	# STARPAR(bfpar,epar,p0mean,p0std,nwalkers=nwalkers,nthreads=nthreads,
-	# 	nburnsteps=nburnsteps,nsteps=nsteps,outname=outname,priordict=priordict)
-			
